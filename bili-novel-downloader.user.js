@@ -1212,7 +1212,6 @@ const BNP = (function () {
             downloadFile(new Blob([data], { type: 'application/epub+zip' }), epubName + '.epub', outputDir || '');
             addLog('INFO', '下载已触发');
           } catch(e) { addLog('ERROR', `generate失败: ${e.message} ${e.stack}`); }
-        }
       }
 
       fill.style.width = '100%'; ptext.textContent = '✅ 全部完成!'; peta.textContent = ''; document.getElementById('bnp-mini-text').textContent = '✅ 完成'; document.getElementById('bnp-mini-sub').textContent = ''; if (ringFg) ringFg.style.strokeDashoffset = '0';
