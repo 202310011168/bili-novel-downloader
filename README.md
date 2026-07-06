@@ -24,14 +24,6 @@
 - 苹果风格 UI，可拖动
 - 日志持久化，支持跨会话查看
 
-## Node.js 调试
-
-```bash
-npm install
-node test/node_test.mjs <URL> --no-down      # 查看信息
-node test/node_test.mjs <URL> --volumes 1     # 下载第1卷
-```
-
 ## License
 
 MIT
