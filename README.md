@@ -51,15 +51,7 @@
 
 支持域名：`bilinovel.com` / `linovelib.com` 及其 `m.` / `www.` 子域名。
 
-### 第二步：点击右下角 EPUB 按钮
-
-页面右下角会出现一个浮动的 **EPUB** 按钮（可拖拽），点击打开下载面板。
-
-> 📸 *右下角浮动按钮*
-> <img width="2850" height="1432" alt="image" src="https://github.com/user-attachments/assets/a27bbdd1-9fd9-4b00-b115-81aab20f8f94" />
-
-
-### 第三步：选择分卷
+### 第二步：选择分卷
 
 面板会显示小说信息和分卷列表：
 
@@ -71,7 +63,7 @@
 > <img width="1110" height="1304" alt="image" src="https://github.com/user-attachments/assets/732bd6d1-281e-4aa5-897e-98fb2c302423" />
 
 
-### 第四步：等待下载完成
+### 第三步：等待下载完成
 
 下载过程中：
 
