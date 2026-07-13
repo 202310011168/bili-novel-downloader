@@ -874,11 +874,10 @@ const BNP = (function () {
       padding: 10px 12px; border-radius: 12px; max-height: 300px;
       overflow-y: auto; line-height: 1.6;
       scrollbar-width: thin; scrollbar-color: var(--bnp-border) transparent;
+    }
     .bnp-log::-webkit-scrollbar { width: 4px; }
     .bnp-log::-webkit-scrollbar-thumb { background: var(--bnp-border); border-radius: 2px; }
     .bnp-log::-webkit-scrollbar-track { background: transparent; }
-      margin-top: 6px; display: none;
-    }
     .bnp-log:empty { display: none; }
     .bnp-l { padding: 1px 0; display: flex; align-items: flex-start; gap: 6px; }
     .bnp-l s { color: #8e8e93; flex-shrink: 0; min-width: 64px; text-decoration: none; }
