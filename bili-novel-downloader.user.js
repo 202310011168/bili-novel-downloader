@@ -793,20 +793,9 @@ const BNP = (function () {
     .bnp-vol-tbar {
       display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
     }
-    .bnp-vol-select-all {
-      display: inline-flex; align-items: center; gap: 5px;
-      padding: 5px 12px; border-radius: 8px;
-      font-size: 12px; font-weight: 500; color: var(--bnp-accent);
-      background: rgba(0,122,255,0.06); border: 0.5px solid var(--bnp-border);
-      cursor: pointer; user-select: none;
-      transition: background 0.2s, box-shadow 0.2s, transform 0.15s;
-    }
-    .bnp-vol-select-all:hover { background: rgba(0,122,255,0.12); transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,122,255,0.1); }
-    .bnp-vol-select-all:active { transform: scale(0.96); }
-    .bnp-vol-select-all .check-icon { font-size: 13px; line-height: 1; }
     .bnp-vol-cnt {
       font-size: 11px; color: var(--bnp-text3); background: var(--bnp-border);
-      padding: 2px 8px; border-radius: 6px; font-weight: 500; margin-left: auto;
+      padding: 2px 10px; border-radius: 6px; font-weight: 500;
     }
     .bnp-vol {
       border: 0.5px solid var(--bnp-border); border-radius: 14px; margin-bottom: 8px;
@@ -1116,10 +1105,9 @@ const BNP = (function () {
       const currentVol = chPage ? findCurrentVolume(vols) : null;
       const volHtml = vols.map((v, i) => {
         const label = escH(v.name || novel.title);
-        const checked = '';
         const delay = i * 50;
         const hidden = currentVol && v !== currentVol && !_catalogExpanded;
-        return `<div class="bnp-vol" data-vol="${i}" style="${hidden ? 'display:none' : `animation-delay:${delay}ms`}"><label class="bnp-vol-hdr"><input type="checkbox" class="bnp-vc" data-i="${i}" ${checked}><span class="vn">${label}</span></label></div>`;
+        return `<div class="bnp-vol" data-vol="${i}" style="${hidden ? 'display:none' : `animation-delay:${delay}ms`}"><label class="bnp-vol-hdr"><input type="radio" name="bnp-vol" class="bnp-vc" data-i="${i}"><span class="vn">${label}</span></label></div>`;
       }).join('');
 
       let extraHtml = '';
@@ -1130,29 +1118,8 @@ const BNP = (function () {
         }
       }
 
-      document.getElementById('bnp-vol-area').innerHTML = `<div class="bnp-vol-tbar"><span class="bnp-vol-select-all" id="bnp-select-all"><span class="check-icon">☐</span> <span id="bnp-select-text">全选</span></span><span class="bnp-vol-cnt" id="bnp-vol-cnt">${vols.length} 卷</span></div>${extraHtml}` + volHtml;
+      document.getElementById('bnp-vol-area').innerHTML = `<div class="bnp-vol-tbar"><span class="bnp-vol-cnt" id="bnp-vol-cnt">${vols.length} 卷 · 请选择一卷</span></div>${extraHtml}` + volHtml;
       document.getElementById('bnp-vol-area').style.display = 'block';
-
-      function updateSelectAll() {
-        const cbs = document.querySelectorAll('.bnp-vc');
-        const allChecked = [...cbs].every(cb => cb.checked);
-        const selEl = document.getElementById('bnp-select-all');
-        const txtEl = document.getElementById('bnp-select-text');
-        const iconEl = selEl?.querySelector('.check-icon');
-        if (iconEl) iconEl.textContent = allChecked ? '☑' : '☐';
-        if (txtEl) txtEl.textContent = allChecked ? '取消全选' : '全选';
-      }
-      document.getElementById('bnp-select-all')?.addEventListener('click', () => {
-        const cbs = document.querySelectorAll('.bnp-vc');
-        const allChecked = [...cbs].every(cb => cb.checked);
-        cbs.forEach(cb => cb.checked = !allChecked);
-        updateSelectAll();
-      });
-      // 单个勾选时更新状态
-      document.querySelectorAll('.bnp-vc').forEach(cb => {
-        cb.addEventListener('change', updateSelectAll);
-      });
-      updateSelectAll();
 
       const expandBtn = document.getElementById('bnp-vol-expand');
       if (expandBtn) {
