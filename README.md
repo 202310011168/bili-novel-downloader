@@ -1,6 +1,8 @@
 # 哔哩轻小说打包下载器
 
-将 [哔哩轻小说](https://m.bilinovel.com) 和 [轻小说文库](https://linovelib.com) 的小说打包为 EPUB 电子书的 Tampermonkey 用户脚本。
+将 [哔哩轻小说](https://m.bilinovel.com) 的小说打包为 EPUB 电子书的 Tampermonkey 用户脚本。
+
+> 仅支持哔哩轻小说（bilinovel.com / linovelib.com），**不支持**轻小说文库（wenku8.net）。
 
 ## 安装
 
