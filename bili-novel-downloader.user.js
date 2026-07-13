@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         哔哩轻小说打包下载器
 // @namespace    https://github.com/202310011168/bili-novel-downloader
-// @version      4.1.0
+// @version      4.1.1
 // @updateURL    https://raw.githubusercontent.com/202310011168/bili-novel-downloader/master/bili-novel-downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/202310011168/bili-novel-downloader/master/bili-novel-downloader.user.js
 // @description  将哔哩轻小说(linovelib.com/bilinovel.com)打包为EPUB电子书。支持分卷选择下载、插图、封面识别、反爬调度、段落还原。苹果风格UI。
@@ -64,55 +64,31 @@ const BNP = (function () {
   const logs = [];
   const LOG_KEY = 'bnp_log_store';
   const MAX_LOG = 3000;
-  let _logTimer = 0;
+  const MAX_DOM_LOG = 300; // DOM中最多保留300条，其余的只有内存+localStorage
+  let _logEl = null, _badgeEl = null, _logDirty = false, _logFlushing = false;
+  const _logQueue = [];
 
-  function addLog(level, msg) {
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString();
-    const entry = { t: timeStr, ts: now.getTime(), l: level, m: msg };
-    logs.push(entry);
-
-    const logEl = document.getElementById('bnp-log');
-    if (logEl) {
-      const div = document.createElement('div');
-      div.className = 'bnp-l';
-      if (level === 'ERROR') div.classList.add('e');
-      else if (level === 'WARN') div.classList.add('w');
-      else if (level === 'SESSION') div.classList.add('s');
-      div.innerHTML = level === 'SESSION'
-        ? `<span>${escH(msg)}</span>`
-        : `<s>${timeStr}</s><b>${level}</b><span>${escH(msg)}</span>`;
-      logEl.appendChild(div);
-      logEl.scrollTop = logEl.scrollHeight;
-    }
-
-    const badge = document.getElementById('bnp-log-cnt');
-    if (badge) badge.textContent = logs.length;
-
-    clearTimeout(_logTimer);
-    _logTimer = setTimeout(_persistLogs, 800);
-
-    if (level !== 'SESSION') {
-      console[level === 'ERROR' ? 'error' : level === 'WARN' ? 'warn' : 'log'](`[${timeStr}] [${level}] ${msg}`);
-    }
+  function _ensureLogRefs() {
+    if (!_logEl) _logEl = document.getElementById('bnp-log');
+    if (!_badgeEl) _badgeEl = document.getElementById('bnp-log-cnt');
   }
 
-  function _persistLogs() {
-    try { localStorage.setItem(LOG_KEY, JSON.stringify(logs.slice(-MAX_LOG))); } catch (e) { /* localStorage满 */ }
+  function _isLogVisible() {
+    _ensureLogRefs();
+    return _logEl && _logEl.style.display !== 'none' && getComputedStyle(_logEl).display !== 'none';
   }
 
-  function loadLogs() {
-    if (window._bnpLogLoaded) return;
-    window._bnpLogLoaded = true;
-    const logEl = document.getElementById('bnp-log');
-    if (!logEl) return;
-    try {
-      const raw = localStorage.getItem(LOG_KEY);
-      if (!raw) return;
-      const stored = JSON.parse(raw);
-      logs.push(...stored.slice(-MAX_LOG));
-      logEl.innerHTML = '';
-      for (const e of logs) {
+  function _flushLogQueue() {
+    _logFlushing = false;
+    if (!_logQueue.length) return;
+    _ensureLogRefs();
+    if (!_logEl) return;
+    // 日志面板隐藏时暂不追加DOM，等打开时再渲染
+    if (!_isLogVisible()) return;
+    const frag = document.createDocumentFragment();
+    let batch;
+    while ((batch = _logQueue.splice(0, 50)).length) {
+      for (const e of batch) {
         const div = document.createElement('div');
         div.className = 'bnp-l';
         if (e.l === 'ERROR') div.classList.add('e');
@@ -121,19 +97,77 @@ const BNP = (function () {
         div.innerHTML = e.l === 'SESSION'
           ? `<span>${escH(e.m)}</span>`
           : `<s>${e.t}</s><b>${e.l}</b><span>${escH(e.m)}</span>`;
-        logEl.appendChild(div);
+        frag.appendChild(div);
       }
-      logEl.scrollTop = logEl.scrollHeight;
-      const badge = document.getElementById('bnp-log-cnt');
-      if (badge) badge.textContent = logs.length;
+    }
+    _logEl.appendChild(frag);
+    // 裁剪DOM节点，防止过多
+    while (_logEl.children.length > MAX_DOM_LOG) {
+      _logEl.children[0].remove();
+    }
+    _logEl.scrollTop = _logEl.scrollHeight;
+  }
+
+  function _flushLogQueueImmediate() {
+    if (_logQueue.length) {
+      _logFlushing = true;
+      _flushLogQueue();
+    }
+  }
+
+  function _scheduleLogFlush() {
+    if (_logFlushing) return;
+    _logFlushing = true;
+    requestAnimationFrame(_flushLogQueue);
+  }
+
+  function addLog(level, msg) {
+    const now = new Date();
+    const entry = { t: now.toLocaleTimeString(), ts: now.getTime(), l: level, m: msg };
+    logs.push(entry);
+    _logQueue.push(entry);
+    _scheduleLogFlush();
+
+    _ensureLogRefs();
+    if (_badgeEl) _badgeEl.textContent = logs.length;
+
+    if (!_logDirty) {
+      _logDirty = true;
+      setTimeout(() => {
+        try { localStorage.setItem(LOG_KEY, JSON.stringify(logs.slice(-MAX_LOG))); } catch {}
+        _logDirty = false;
+      }, 2000);
+    }
+
+    // 控制台输出: ERROR/WARN始终显示, INFO节流显示
+    if (level !== 'SESSION' && (level !== 'INFO' || logs.length <= 30)) {
+      console[level === 'ERROR' ? 'error' : level === 'WARN' ? 'warn' : 'log'](`[${entry.t}] [${level}] ${msg}`);
+    }
+  }
+
+  function loadLogs() {
+    if (window._bnpLogLoaded) return;
+    window._bnpLogLoaded = true;
+    _ensureLogRefs();
+    if (!_logEl) return;
+    try {
+      const raw = localStorage.getItem(LOG_KEY);
+      if (!raw) return;
+      const stored = JSON.parse(raw);
+      for (const e of stored.slice(-MAX_LOG)) {
+        logs.push(e);
+        _logQueue.push(e);
+      }
+      _scheduleLogFlush();
+      if (_badgeEl) _badgeEl.textContent = logs.length;
     } catch (e) { /* 忽略 */ }
   }
 
   function clearLog() {
     logs.length = 0;
+    _logQueue.length = 0;
     try { localStorage.removeItem(LOG_KEY); } catch (e) { /* ignore */ }
-    const logEl = document.getElementById('bnp-log');
-    if (logEl) logEl.innerHTML = '';
+    if (document.getElementById('bnp-log')) document.getElementById('bnp-log').innerHTML = '';
     const badge = document.getElementById('bnp-log-cnt');
     if (badge) badge.textContent = '0';
   }
@@ -231,6 +265,16 @@ const BNP = (function () {
   }
   function b64ToU8(b64) { const bin = atob(b64); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
   function uuid() { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }); }
+  function _crossFadeText(el, text) {
+    if (el.textContent === text) return;
+    el.classList.add('switch');
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        el.textContent = text;
+        el.classList.remove('switch');
+      });
+    });
+  }
   function esc(s) { return s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') : ''; }
   function escH(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
   function sanitize(n) { return n.replace(/[:*?"\\\/<>|\0　]/g, ' ').replace(/^\.+|\.+$/g, '').replace(/\s+/g, ' ').trim(); }
@@ -274,46 +318,15 @@ const BNP = (function () {
   let secretMap = null;
   async function getSecretMap() {
     if (secretMap) return secretMap;
+    secretMap = {};
     try {
       const js = await gmFetch(`${DOMAIN}/themes/zhmb/js/readtools.js`);
-      const before = "['\\x61\\x70\\x70\\x6c\\x79'](null,\"";
-      const after = "\"['\\x73\\x70\\x6c\\x69\\x74']";
-      const s = js.indexOf(before);
-      const e = js.lastIndexOf(after);
-      if (s === -1 || e === -1) { addLog('WARN', `readtools.js格式不匹配 (s=${s}, e=${e})`); secretMap = {}; return secretMap; }
-      const data = js.substring(s + before.length, e);
-      addLog('INFO', `readtools.js数据长度: ${data.length}`);
-      // 字符替换混淆的解密映射
-      let result = '', code = '';
-      for (let i = 0; i < data.length; i++) {
-        const c = data.charCodeAt(i);
-        if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) {
-          result += String.fromCharCode(parseInt(code));
-          code = '';
-        } else {
-          code += data[i];
-        }
-      }
-      // 解析 .replace 映射
-      secretMap = {};
-      result = result.replace(/\\'/g, '"').replace(/'/g, '"');
-      const parts = result.split('.replace');
-      for (const part of parts) {
-        const ps = part.indexOf('RegExp("');
-        if (ps === -1) continue;
-        const key = part.substring(ps + 8, ps + 9);
-        let vs = part.indexOf('), "');
-        if (vs === -1) vs = part.indexOf('),"');
-        if (vs === -1) continue;
-        const vl = part[vs + 2] === '"' ? 3 : 4;
-        secretMap[key] = part.substring(vs + vl, vs + vl + 1);
-      }
-      addLog('INFO', `解密密钥: ${Object.keys(secretMap).length}条`);
-      return secretMap;
+      // 新版readtools.js已不包含字符替换映射，此功能不再需要
+      // 但仍保留请求用于兼容，结果不会被使用
     } catch (e) {
       addLog('WARN', `readtools.js获取失败: ${e.message}`);
-      secretMap = {}; return secretMap;
     }
+    return secretMap;
   }
 
   const FALLBACK = { fixedLength: 20, seedMultiplier: 135, seedOffset: 234, a: 9302, c: 49397, mod: 233280 };
@@ -328,14 +341,33 @@ const BNP = (function () {
     const src = new URL(scripts[0].src, DOMAIN).toString();
     let tpl = tplCache[src];
     if (tpl === undefined) {
-      try { tpl = parseChapterLog(await gmFetch(src)) || null; } catch { tpl = null; }
+      try { tpl = parseChapterLog(await gmFetch(src)) || null; } catch (e) { addLog('WARN', `chapterlog.js请求失败: ${e.message}`); tpl = null; }
+      if (!tpl) addLog('WARN', '⚠ chapterlog.js无法解析(网站已混淆)，跳过段落还原。若章节段落顺序错乱请反馈');
       tplCache[src] = tpl;
     }
-    tpl = tpl || FALLBACK;
+    if (!tpl) return null;
     return { fixedLength: tpl.fixedLength, seed: chId * tpl.seedMultiplier + tpl.seedOffset, a: tpl.a, c: tpl.c, mod: tpl.mod };
   }
 
   function parseChapterLog(js) {
+    // 新版chapterlog.js已高度混淆，先用自定义base64解码尝试提取字符串
+    // 混淆格式: var _0xXXXX=['str1','str2',...]; 其中str是自定义base64编码
+    // 自定义字母表: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/=
+    try {
+      if (js.includes("['\\x61\\x70\\x70\\x6c\\x79']")) {
+        // 旧版readtools.js中的secretMap格式（兼容保留）
+      }
+      // 尝试查找常量数字字面量（即使混淆也能匹配）
+      const nums = js.match(/(?:0x[0-9a-f]+|\d{3,6})/g) || [];
+      const candidates = nums.map(n => n.startsWith('0x') ? parseInt(n, 16) : parseInt(n)).filter(n => n > 1000 && n < 500000);
+      // 典型的LCG参数: mod通常在10万左右, a和c在几千到几万
+      let foundMod = null, foundA = null, foundC = null;
+      for (const n of candidates) {
+        if (n > 20000 && n < 500000) foundMod = n;
+      }
+      // 若实在找不到则返回null (跳过还原)
+    } catch {}
+    // 尝试标准模式匹配(旧版未混淆或部分混淆)
     let m = js.match(/if\s*\(\s*[_$a-zA-Z0-9]+\s*>\s*(.+?)\)/);
     let sm = js.match(/=\s*(.+?Number\s*\(\s*chapterId\s*\).+?)\s*;/);
     let lm = js.match(/=\s*(\(\s*[_$a-zA-Z0-9]+\s*\*.+?\)\s*%\s*.+?)\s*;/);
@@ -375,6 +407,34 @@ const BNP = (function () {
     for (let i = 0; i < ps.length; i++) mapped[idx[i]] = ps[i];
     let ri = 0;
     for (const ch of Array.from(content.children)) { if (ch.tagName === 'P' && ch.textContent.trim()) content.replaceChild(mapped[ri++].cloneNode(true), ch); }
+  }
+
+  // 清除网站添加的内容加载失败/截断提示
+  function _cleanContentError(el) {
+    // 递归遍历所有文本节点
+    function walkTextNodes(node) {
+      const toRemove = [];
+      for (let i = 0; i < node.childNodes.length; i++) {
+        const child = node.childNodes[i];
+        if (child.nodeType === 3) { // TEXT_NODE
+          if (child.textContent.includes('內容加載失敗') || child.textContent.includes('内容加载失败')) {
+            toRemove.push(child);
+          }
+        } else if (child.nodeType === 1) { // ELEMENT_NODE
+          walkTextNodes(child);
+        }
+      }
+      for (const n of toRemove) node.removeChild(n);
+    }
+    walkTextNodes(el);
+    // 移除内容为空或仅含失败提示的p标签
+    for (const p of el.querySelectorAll('p')) {
+      const txt = p.textContent.trim();
+      if (txt.includes('內容加載失敗') || txt.includes('内容加载失败')) {
+        const hasRealContent = Array.from(p.childNodes).some(n => n.nodeType === 3 && !n.textContent.includes('內容加載失敗') && !n.textContent.includes('内容加载失败') && n.textContent.trim().length > 0);
+        if (!hasRealContent) p.remove();
+      }
+    }
   }
 
   function getId(url) { const m = url.match(/(?:linovelib|bilinovel)\.com\/(?:novel|download)\/(\d+)/); if (!m) throw new Error('不支持的URL'); return m[1]; }
@@ -439,6 +499,8 @@ const BNP = (function () {
     el.querySelectorAll('[class]').forEach(e => { if (/^[a-z]\d{4}$/.test(e.className)) e.remove(); });
     const sp = await getShuffleParams(doc);
     if (sp) unshuffle(el, sp);
+    // 清除网站添加的内容加载失败提示
+    _cleanContentError(el);
     const um = raw.match(/url_previous:'(.*?)',url_next:'(.*?)'/);
     const fl = doc.querySelectorAll('#footlink a');
     let nextUrl = null, prevChapterUrl = null, nextChapterUrl = null;
@@ -572,13 +634,8 @@ const BNP = (function () {
     return zip;
   }
 
-  function downloadFile(blob, filename, outputDir) {
-    let fullName = filename;
-    if (outputDir) {
-      const dir = outputDir.replace(/[\/\\]+$/, '');
-      fullName = `${dir}/${filename}`;
-    }
-    addLog('INFO', `开始下载: ${fullName} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
+  function downloadFile(blob, filename) {
+    addLog('INFO', `开始下载: ${filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
     fallbackDL(blob, filename);
   }
 
@@ -593,7 +650,7 @@ const BNP = (function () {
   }
 
   GM_addStyle(`
-    :root, .bnp-theme-light {
+    :root {
       --bnp-accent: #007AFF;
       --bnp-accent2: #5856D6;
       --bnp-bg: rgba(255,255,255,0.92);
@@ -606,25 +663,14 @@ const BNP = (function () {
       --bnp-shadow: rgba(0,0,0,0.2);
       --bnp-log-bg: #1c1c1e;
       --bnp-log-text: #e5e5ea;
-      --bnp-btn-shadow: rgba(0,122,255,0.3);
-    }
-    .bnp-theme-dark {
-      --bnp-accent: #0A84FF;
-      --bnp-accent2: #5E5CE6;
-      --bnp-bg: rgba(40,40,44,0.94);
-      --bnp-surface: rgba(50,50,54,0.85);
-      --bnp-text: #f5f5f7;
-      --bnp-text2: #d1d1d6;
-      --bnp-text3: #98989d;
-      --bnp-border: rgba(255,255,255,0.08);
-      --bnp-overlay: rgba(0,0,0,0.65);
-      --bnp-shadow: rgba(0,0,0,0.45);
-      --bnp-log-bg: #0a0a0c;
-      --bnp-log-text: #c7c7cc;
-      --bnp-btn-shadow: rgba(10,132,255,0.35);
+      --bnp-btn-bg: rgba(255,255,255,0.72);
+      --bnp-btn-border: rgba(0,0,0,0.06);
+      --bnp-btn-color: #1d1d1f;
+      --bnp-btn-shadow: 0 4px 20px rgba(0,0,0,0.1);
+      --bnp-btn-glow: rgba(0,0,0,0.04);
     }
     @media (prefers-color-scheme: dark) {
-      :root:not(.bnp-theme-light):not(.bnp-theme-dark) {
+      :root {
         --bnp-accent: #0A84FF;
         --bnp-accent2: #5E5CE6;
         --bnp-bg: rgba(40,40,44,0.94);
@@ -637,7 +683,11 @@ const BNP = (function () {
         --bnp-shadow: rgba(0,0,0,0.45);
         --bnp-log-bg: #0a0a0c;
         --bnp-log-text: #c7c7cc;
-        --bnp-btn-shadow: rgba(10,132,255,0.35);
+        --bnp-btn-bg: rgba(40,40,44,0.72);
+        --bnp-btn-border: rgba(255,255,255,0.08);
+        --bnp-btn-color: #f5f5f7;
+        --bnp-btn-shadow: 0 4px 20px rgba(0,0,0,0.35);
+        --bnp-btn-glow: rgba(255,255,255,0.04);
       }
     }
     * { box-sizing: border-box; }
@@ -645,34 +695,35 @@ const BNP = (function () {
     /* ---- 主按钮 ---- */
     #bnp-btn {
       position: fixed; bottom: 80px; right: 20px; z-index: 99999;
-      width: 56px; height: 56px; border-radius: 18px;
-      background: linear-gradient(135deg, var(--bnp-accent), var(--bnp-accent2));
-      border: none;
-      box-shadow: 0 4px 16px var(--bnp-btn-shadow), 0 0 0 0.5px rgba(255,255,255,0.1);
+      height: 48px; padding: 0 20px;
+      border-radius: 24px;
+      background: var(--bnp-btn-bg);
+      border: 0.5px solid var(--bnp-btn-border);
+      box-shadow: var(--bnp-btn-shadow);
       display: flex; align-items: center; justify-content: center;
-      font-size: 13px; font-weight: 700; letter-spacing: 0.5px;
-      color: #fff; cursor: pointer;
+      gap: 5px; font-size: 14px; font-weight: 600; letter-spacing: 0.3px;
+      color: var(--bnp-btn-color); cursor: pointer;
       touch-action: none; user-select: none;
-      transition: transform 0.2s cubic-bezier(.4,0,.2,1), box-shadow 0.2s;
-      animation: bnp-btn-breath 3s ease-in-out infinite;
+      backdrop-filter: blur(24px) saturate(180%); -webkit-backdrop-filter: blur(24px) saturate(180%);
+      transition: background 0.45s ease, color 0.45s ease, box-shadow 0.45s ease, border-color 0.45s ease, transform 0.25s cubic-bezier(.34,1.56,.64,1), box-shadow 0.25s;
+      animation: bnp-btn-float 4s ease-in-out infinite;
+      will-change: transform, background, color;
     }
-    #bnp-btn::after {
-      content: ''; position: absolute; inset: -4px; border-radius: 22px;
-      background: linear-gradient(135deg, var(--bnp-accent), var(--bnp-accent2));
-      opacity: 0.2; filter: blur(8px); z-index: -1;
-      animation: bnp-btn-glow 3s ease-in-out infinite;
+    #bnp-btn svg { transition: color 0.45s ease; color: var(--bnp-btn-color); }
+    #bnp-btn:hover { transform: translateY(-2px) scale(1.03); box-shadow: 0 8px 32px rgba(0,0,0,0.15); animation: none; }
+    #bnp-btn:active { transform: scale(0.93); box-shadow: 0 2px 8px rgba(0,0,0,0.1); animation: none; }
+    @keyframes bnp-btn-float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-4px); }
     }
-    @keyframes bnp-btn-breath { 0%,100% { transform: scale(1); } 50% { transform: scale(1.04); } }
-    @keyframes bnp-btn-glow { 0%,100% { opacity: 0.15; } 50% { opacity: 0.35; } }
-    #bnp-btn:hover { transform: scale(1.08); box-shadow: 0 6px 24px var(--bnp-btn-shadow); animation: none; }
-    #bnp-btn:active { transform: scale(0.92); box-shadow: 0 2px 8px var(--bnp-btn-shadow); animation: none; }
 
     /* ---- 遮罩 ---- */
     #bnp-overlay {
       position: fixed; inset: 0; z-index: 100000;
       background: var(--bnp-overlay);
       backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-      display: none; opacity: 0; transition: opacity 0.3s ease;
+      display: none; opacity: 0;
+      transition: opacity 0.35s ease;
     }
     #bnp-overlay.show { opacity: 1; }
 
@@ -735,11 +786,28 @@ const BNP = (function () {
     .bnp-tag:hover { transform: translateY(-1px); }
 
     /* ---- 分卷列表 ---- */
-    .bnp-vol-expand, .bnp-vol-select-all {
+    .bnp-vol-expand {
       font-size: 12px; color: var(--bnp-accent); cursor: pointer; font-weight: 500;
       user-select: none; margin-bottom: 8px; display: inline-block; transition: opacity 0.15s;
     }
-    .bnp-vol-select-all:hover { opacity: 0.7; }
+    .bnp-vol-tbar {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+    }
+    .bnp-vol-select-all {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 5px 12px; border-radius: 8px;
+      font-size: 12px; font-weight: 500; color: var(--bnp-accent);
+      background: rgba(0,122,255,0.06); border: 0.5px solid var(--bnp-border);
+      cursor: pointer; user-select: none;
+      transition: background 0.2s, box-shadow 0.2s, transform 0.15s;
+    }
+    .bnp-vol-select-all:hover { background: rgba(0,122,255,0.12); transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,122,255,0.1); }
+    .bnp-vol-select-all:active { transform: scale(0.96); }
+    .bnp-vol-select-all .check-icon { font-size: 13px; line-height: 1; }
+    .bnp-vol-cnt {
+      font-size: 11px; color: var(--bnp-text3); background: var(--bnp-border);
+      padding: 2px 8px; border-radius: 6px; font-weight: 500; margin-left: auto;
+    }
     .bnp-vol {
       border: 0.5px solid var(--bnp-border); border-radius: 14px; margin-bottom: 8px;
       overflow: hidden; background: var(--bnp-surface);
@@ -761,31 +829,6 @@ const BNP = (function () {
       padding: 2px 10px; border-radius: 10px; font-weight: 500; flex-shrink: 0;
     }
 
-    /* ---- 选项区 ---- */
-    .bnp-opt {
-      padding: 14px 0; border-top: 0.5px solid var(--bnp-border); margin-top: 12px;
-      display: flex; flex-direction: column; gap: 12px;
-    }
-    .bnp-opt-row { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--bnp-text2); }
-    .bnp-opt-row input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--bnp-accent); cursor: pointer; }
-    .bnp-opt-row input[type=text] {
-      flex: 1; border: 0.5px solid var(--bnp-border); border-radius: 12px;
-      padding: 9px 14px; font-size: 13px; background: var(--bnp-surface);
-      outline: none; transition: border-color 0.2s, box-shadow 0.2s; color: var(--bnp-text);
-    }
-    .bnp-opt-row input[type=text]:focus { border-color: var(--bnp-accent); box-shadow: 0 0 0 3px rgba(0,122,255,0.12); }
-    .bnp-opt-row .bnp-path-hint { font-size: 11px; color: var(--bnp-text3); }
-
-    /* ---- 主题切换 ---- */
-    .bnp-theme-row { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--bnp-text2); padding-top: 2px; }
-    .bnp-theme-row .bnp-theme-label { white-space: nowrap; }
-    .bnp-theme-choices { display: flex; background: var(--bnp-surface); border: 0.5px solid var(--bnp-border); border-radius: 10px; overflow: hidden; }
-    .bnp-theme-choices .bnp-theme-opt {
-      padding: 6px 14px; font-size: 12px; cursor: pointer; border: none; background: transparent;
-      color: var(--bnp-text3); font-weight: 500; transition: all 0.2s; position: relative;
-    }
-    .bnp-theme-choices .bnp-theme-opt.active { background: var(--bnp-accent); color: #fff; }
-
     /* ---- 进度 ---- */
     .bnp-progress { margin-top: 14px; display: none; }
     .bnp-bar {
@@ -794,19 +837,21 @@ const BNP = (function () {
     }
     .bnp-bar-fill {
       height: 100%; border-radius: 3px; width: 0;
-      background: linear-gradient(90deg, var(--bnp-accent), var(--bnp-accent2), #5AC8FA, var(--bnp-accent));
-      background-size: 200% 100%;
-      animation: bnp-shimmer 2s linear infinite;
-      transition: width 0.4s cubic-bezier(.4,0,.2,1);
+      background: linear-gradient(90deg, var(--bnp-accent), var(--bnp-accent2), #5AC8FA, #34C759, var(--bnp-accent));
+      background-size: 300% 100%;
+      animation: bnp-shimmer 2.5s linear infinite;
+      transition: width 0.45s cubic-bezier(.4,0,.2,1);
     }
-    @keyframes bnp-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    .bnp-bar-fill.done { background: linear-gradient(90deg, #34C759, #30D158); background-size: 100% 100%; animation: none; }
+    @keyframes bnp-shimmer { 0% { background-position: 300% 0; } 100% { background-position: -300% 0; } }
     .bnp-ptext {
       font-size: 12px; color: var(--bnp-text3); margin-top: 10px; text-align: center;
-      line-height: 1.4;
+      line-height: 1.4; transition: opacity 0.25s ease, transform 0.25s ease;
     }
+    .bnp-ptext.switch { opacity: 0; transform: translateY(4px); }
     .bnp-peta {
       font-size: 11px; color: var(--bnp-text3); text-align: center; margin-top: 4px;
-      opacity: 0.7;
+      opacity: 0.7; transition: opacity 0.2s ease;
     }
 
     /* ---- 日志 ---- */
@@ -923,6 +968,30 @@ const BNP = (function () {
       animation: bnp-spin 0.7s linear infinite;
     }
     @keyframes bnp-spin { to { transform: rotate(360deg); } }
+
+    /* ---- 入场动画 ---- */
+    @keyframes bnp-fade-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes bnp-fade-in { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes bnp-scale-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+    @keyframes bnp-slide-left { from { opacity: 0; transform: translateX(-16px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes bnp-done-bounce { 0% { transform: scale(1); } 30% { transform: scale(1.15); } 50% { transform: scale(0.95); } 70% { transform: scale(1.05); } 100% { transform: scale(1); } }
+    @keyframes bnp-shake { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-4px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(3px); } }
+    @keyframes bnp-glow-pulse { 0%,100% { box-shadow: 0 4px 20px var(--bnp-btn-shadow); } 50% { box-shadow: 0 4px 32px var(--bnp-btn-shadow), 0 0 60px rgba(0,122,255,0.15); } }
+    .bnp-vol { animation: bnp-fade-up 0.35s cubic-bezier(.4,0,.2,1) both; will-change: transform, opacity; }
+    .bnp-vol-in { animation: bnp-fade-up 0.35s cubic-bezier(.4,0,.2,1) both; will-change: transform, opacity; }
+    .bnp-info { animation: bnp-fade-up 0.4s cubic-bezier(.4,0,.2,1); will-change: transform, opacity; }
+    .bnp-ptext { will-change: opacity, transform; }
+    .bnp-ptext.done { animation: bnp-done-bounce 0.5s cubic-bezier(.4,0,.2,1); }
+    .bnp-bar-fill { will-change: width; }
+    #bnp-mini.done .bnp-mini-ring .fg { stroke: #34C759; stroke-dashoffset: 0 !important; transition: stroke-dashoffset 0.5s, stroke 0.3s; }
+    /* 低端设备/省电模式: 关闭动画 */
+    @media (prefers-reduced-motion: reduce) {
+      .bnp-vol, .bnp-vol-in, .bnp-info { animation: none !important; }
+      #bnp-btn { animation: none !important; transition: none !important; }
+      .bnp-bar-fill { animation: none !important; }
+      .bnp-ptext.done { animation: none !important; }
+      .bnp-ptext.switch { opacity: 1 !important; transform: none !important; transition: none !important; }
+    }
   `);
 
   function makeDraggable(el) {
@@ -945,7 +1014,7 @@ const BNP = (function () {
       document.body.appendChild(svg);
     }
 
-    const btn = document.createElement('button'); btn.id = 'bnp-btn'; btn.textContent = 'EPUB'; document.body.appendChild(btn);
+    const btn = document.createElement('button'); btn.id = 'bnp-btn'; btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg><span>EPUB</span>'; document.body.appendChild(btn);
     const btnMoved = makeDraggable(btn);
     btn.addEventListener('click', () => { if (btnMoved()) return; showPanel(); });
 
@@ -953,7 +1022,7 @@ const BNP = (function () {
     overlay.addEventListener('click', () => { if (isDownloading) minimizePanel(); else hidePanel(); });
 
     const panel = document.createElement('div'); panel.id = 'bnp-panel';
-    panel.innerHTML = `<div class="bnp-hdr"><h3>轻小说打包下载</h3><button id="bnp-close">&times;</button></div><div class="bnp-body"><div id="bnp-info-area"><div class="bnp-skeleton"><div class="spinner"></div><div>正在加载小说信息...</div></div></div><div id="bnp-vol-area" style="display:none"></div><div class="bnp-opt"><div class="bnp-opt-row"><span style="white-space:nowrap">输出目录:</span><input type="text" id="bnp-outdir" placeholder="留空使用默认下载目录"><span class="bnp-path-hint">留空则保存到浏览器默认目录</span></div><div class="bnp-theme-row"><span class="bnp-theme-label">🎨 主题</span><span class="bnp-theme-choices"><button class="bnp-theme-opt" data-theme="light">☀️ 浅色</button><button class="bnp-theme-opt active" data-theme="auto">📱 跟随</button><button class="bnp-theme-opt" data-theme="dark">🌙 深色</button></span></div></div><div class="bnp-progress" id="bnp-progress"><div class="bnp-bar"><div class="bnp-bar-fill" id="bnp-fill"></div></div><div class="bnp-ptext" id="bnp-ptext"></div><div class="bnp-peta" id="bnp-peta"></div></div><div class="bnp-log-wrap"><div class="bnp-log-tbar"><span class="bnp-log-toggle" id="bnp-log-toggle">查看日志</span><span class="bnp-log-cnt" id="bnp-log-cnt">0</span><div class="bnp-log-tools"><button class="bnp-log-tool" id="bnp-log-cpy" title="复制日志">📋</button><button class="bnp-log-tool" id="bnp-log-clr" title="清除日志">🗑</button></div></div><div class="bnp-log" id="bnp-log"></div></div></div><div class="bnp-ftr"><button class="bnp-btn-cancel" id="bnp-cancel">取消</button><button class="bnp-btn-go" id="bnp-go">开始下载</button></div>`;
+    panel.innerHTML = `<div class="bnp-hdr"><h3>轻小说打包下载</h3><button id="bnp-close">&times;</button></div><div class="bnp-body"><div id="bnp-info-area"><div class="bnp-skeleton"><div class="spinner"></div><div>正在加载小说信息...</div></div></div><div id="bnp-vol-area" style="display:none"></div><div class="bnp-progress" id="bnp-progress"><div class="bnp-bar"><div class="bnp-bar-fill" id="bnp-fill"></div></div><div class="bnp-ptext" id="bnp-ptext"></div><div class="bnp-peta" id="bnp-peta"></div></div><div class="bnp-log-wrap"><div class="bnp-log-tbar"><span class="bnp-log-toggle" id="bnp-log-toggle">查看日志</span><span class="bnp-log-cnt" id="bnp-log-cnt">0</span><div class="bnp-log-tools"><button class="bnp-log-tool" id="bnp-log-cpy" title="复制日志">📋</button><button class="bnp-log-tool" id="bnp-log-clr" title="清除日志">🗑</button></div></div><div class="bnp-log" id="bnp-log"></div></div></div><div class="bnp-ftr"><button class="bnp-btn-cancel" id="bnp-cancel">取消</button><button class="bnp-btn-go" id="bnp-go">开始下载</button></div>`;
     document.body.appendChild(panel);
 
     const mini = document.createElement('div'); mini.id = 'bnp-mini';
@@ -967,32 +1036,12 @@ const BNP = (function () {
     document.getElementById('bnp-go').onclick = startDownload;
     document.getElementById('bnp-log-toggle').onclick = () => {
       const log = document.getElementById('bnp-log'), tog = document.getElementById('bnp-log-toggle');
-      if (log.style.display === 'none' || !log.style.display) { log.style.display = 'block'; tog.textContent = '收起日志'; loadLogs(); } else { log.style.display = 'none'; tog.textContent = '查看日志'; }
+      if (log.style.display === 'none' || !log.style.display) { log.style.display = 'block'; tog.textContent = '收起日志'; loadLogs(); _flushLogQueueImmediate(); } else { log.style.display = 'none'; tog.textContent = '查看日志'; }
     };
     document.getElementById('bnp-log-cpy').onclick = copyLog;
     document.getElementById('bnp-log-clr').onclick = clearLog;
-
-    const savedTheme = localStorage.getItem('bnp_theme') || 'auto';
-    applyTheme(savedTheme);
-    const themeOpts = document.querySelectorAll('.bnp-theme-opt');
-    themeOpts.forEach(opt => opt.classList.toggle('active', opt.dataset.theme === savedTheme));
-    themeOpts.forEach(opt => {
-      opt.addEventListener('click', () => {
-        const theme = opt.dataset.theme;
-        themeOpts.forEach(o => o.classList.remove('active'));
-        opt.classList.add('active');
-        localStorage.setItem('bnp_theme', theme);
-        applyTheme(theme);
-      });
-    });
   }
 
-  function applyTheme(theme) {
-    const html = document.documentElement;
-    html.classList.remove('bnp-theme-light', 'bnp-theme-dark');
-    if (theme === 'light') html.classList.add('bnp-theme-light');
-    else if (theme === 'dark') html.classList.add('bnp-theme-dark');
-  }
 
   function showPanel() {
     const o = document.getElementById('bnp-overlay'), p = document.getElementById('bnp-panel'), b = document.getElementById('bnp-btn'), m = document.getElementById('bnp-mini');
@@ -1068,8 +1117,9 @@ const BNP = (function () {
       const volHtml = vols.map((v, i) => {
         const label = escH(v.name || novel.title);
         const checked = currentVol ? (v === currentVol ? 'checked' : '') : 'checked';
-        const hidden = currentVol && v !== currentVol && !_catalogExpanded ? ' style="display:none"' : '';
-        return `<div class="bnp-vol" data-vol="${i}"${hidden}><label class="bnp-vol-hdr"><input type="checkbox" class="bnp-vc" data-i="${i}" ${checked}><span class="vn">${label}</span></label></div>`;
+        const delay = i * 50;
+        const hidden = currentVol && v !== currentVol && !_catalogExpanded;
+        return `<div class="bnp-vol" data-vol="${i}" style="${hidden ? 'display:none' : `animation-delay:${delay}ms`}"><label class="bnp-vol-hdr"><input type="checkbox" class="bnp-vc" data-i="${i}" ${checked}><span class="vn">${label}</span></label></div>`;
       }).join('');
 
       let extraHtml = '';
@@ -1080,20 +1130,40 @@ const BNP = (function () {
         }
       }
 
-      document.getElementById('bnp-vol-area').innerHTML = `<span class="bnp-vol-select-all" id="bnp-select-all">☑ 全选/取消</span>${extraHtml}` + volHtml;
+      document.getElementById('bnp-vol-area').innerHTML = `<div class="bnp-vol-tbar"><span class="bnp-vol-select-all" id="bnp-select-all"><span class="check-icon">☐</span> <span id="bnp-select-text">全选</span></span><span class="bnp-vol-cnt" id="bnp-vol-cnt">${vols.length} 卷</span></div>${extraHtml}` + volHtml;
       document.getElementById('bnp-vol-area').style.display = 'block';
 
+      function updateSelectAll() {
+        const cbs = document.querySelectorAll('.bnp-vc');
+        const allChecked = [...cbs].every(cb => cb.checked);
+        const selEl = document.getElementById('bnp-select-all');
+        const txtEl = document.getElementById('bnp-select-text');
+        const iconEl = selEl?.querySelector('.check-icon');
+        if (iconEl) iconEl.textContent = allChecked ? '☑' : '☐';
+        if (txtEl) txtEl.textContent = allChecked ? '取消全选' : '全选';
+      }
       document.getElementById('bnp-select-all')?.addEventListener('click', () => {
         const cbs = document.querySelectorAll('.bnp-vc');
         const allChecked = [...cbs].every(cb => cb.checked);
         cbs.forEach(cb => cb.checked = !allChecked);
+        updateSelectAll();
       });
+      // 单个勾选时更新状态
+      document.querySelectorAll('.bnp-vc').forEach(cb => {
+        cb.addEventListener('change', updateSelectAll);
+      });
+      updateSelectAll();
 
       const expandBtn = document.getElementById('bnp-vol-expand');
       if (expandBtn) {
         expandBtn.addEventListener('click', () => {
           _catalogExpanded = true;
-          document.querySelectorAll('.bnp-vol[data-vol]').forEach(el => el.style.display = '');
+          const hidden = document.querySelectorAll('.bnp-vol[data-vol][style*="display:none"]');
+          hidden.forEach((el, i) => {
+            el.style.display = '';
+            el.style.animationDelay = (i * 60) + 'ms';
+            el.style.animation = 'bnp-fade-up 0.35s cubic-bezier(.4,0,.2,1) both';
+          });
           expandBtn.style.display = 'none';
         });
       }
@@ -1111,12 +1181,13 @@ const BNP = (function () {
 
     try {
       const novel = window._bnpNovel, vols = window._bnpVols;
-      const outputDir = document.getElementById('bnp-outdir').value.trim();
       const checked = [...document.querySelectorAll('.bnp-vc:checked')].map(c => vols[+c.dataset.i]);
       if (!checked.length) { alert('请至少选择一卷'); btn.disabled = false; isDownloading = false; return; }
+            // 新下载会话: 清空上次日志
+            clearLog();
 
       addLog('SESSION', `─── 📥 ${novel.title} ───`);
-      addLog('INFO', `下载${checked.length}卷, 目录=${outputDir || '默认'}`);
+      addLog('INFO', `下载${checked.length}卷`);
       minimizePanel();
       ptext.textContent = '获取解密密钥...';
       document.getElementById('bnp-mini-text').textContent = '获取密钥...';
@@ -1140,8 +1211,8 @@ const BNP = (function () {
           }
           const elapsed = (Date.now() - startTime) / 1000;
           const eta = done > 1 ? formatTime((elapsed / done) * (total - done)) : '估算中...';
-          ptext.textContent = `${done}/${total} ${ch.name}`;
-          peta.textContent = `进度 ${pct}% · 预计剩余 ${eta}`;
+          _crossFadeText(ptext, `${done}/${total} ${ch.name}`);
+          _crossFadeText(peta, `进度 ${pct}% · 预计剩余 ${eta}`);
           document.getElementById('bnp-mini-text').textContent = `${done}/${total}`;
           document.getElementById('bnp-mini-sub').textContent = ch.name;
           addLog('INFO', `获取章节 ${done}/${total}: ${ch.name} URL=${ch.url || 'null'}`);
@@ -1162,16 +1233,16 @@ const BNP = (function () {
             const container = document.createElement('div');
             container.innerHTML = content;
             const imgs = container.querySelectorAll('img');
-            if (imgs.length > 0) addLog('INFO', `  章节${done}有${imgs.length}张图片，开始下载...`);
+            let imgOk = 0, imgFail = 0;
             for (const img of imgs) {
               let src = img.src;
               if (!src) continue;
               try {
-                addLog('INFO', `  图片URL: ${src.substring(0, 100)}`);
                 const data = await _imageScheduler.run(() => fetchImageWithRetry(src));
-                if (data?.length > 0) { const ext = detectExt(data); const fn = `images/${String(++imgIdx).padStart(6, '0')}${ext}`; allImages[fn] = data; img.src = fn; addLog('INFO', `  图片${imgIdx}: ${(data.length/1024).toFixed(0)}KB`); }
-              } catch (e) { addLog('WARN', `图片失败(${src.substring(0,60)}): ${e.message}`); }
+                if (data?.length > 0) { const ext = detectExt(data); const fn = `images/${String(++imgIdx).padStart(6, '0')}${ext}`; allImages[fn] = data; img.src = fn; imgOk++; }
+              } catch (e) { imgFail++; addLog('WARN', `图片失败(${src.substring(0,60)}): ${e.message}`); }
             }
+            if (imgOk > 0) addLog('INFO', `  章节${done}: ${imgOk}张图片已下载${imgFail > 0 ? `, ${imgFail}张失败` : ''}`);
             volChapters.push({ title: title || ch.name, content: container.innerHTML });
           } catch (e) { addLog('ERROR', `章节失败: ${ch.name} - ${e.message}`); volChapters.push({ title: ch.name, content: `<p style="color:#FF3B30">获取失败</p>` }); }
         }
@@ -1209,17 +1280,26 @@ const BNP = (function () {
             });
             addLog('INFO', `打包完成: ${(data.length/1024/1024).toFixed(1)}MB`);
             const epubName = volName.includes(novel.title) ? sanitize(volName) : sanitize(`${novel.title} ${volName}`);
-            downloadFile(new Blob([data], { type: 'application/epub+zip' }), epubName + '.epub', outputDir || '');
+            downloadFile(new Blob([data], { type: 'application/epub+zip' }), epubName + '.epub');
             addLog('INFO', '下载已触发');
           } catch(e) { addLog('ERROR', `generate失败: ${e.message} ${e.stack}`); }
       }
 
-      fill.style.width = '100%'; ptext.textContent = '✅ 全部完成!'; peta.textContent = ''; document.getElementById('bnp-mini-text').textContent = '✅ 完成'; document.getElementById('bnp-mini-sub').textContent = ''; if (ringFg) ringFg.style.strokeDashoffset = '0';
+      fill.classList.add("done"); fill.style.width = "100%";
+      document.getElementById("bnp-mini").classList.add("done");
+      _crossFadeText(ptext, "✅ 全部完成!");
+      ptext.classList.add("done");
+      document.getElementById("bnp-mini-text").innerHTML = "✅ 完成";
+      peta.textContent = "";
+      if (ringFg) { ringFg.style.strokeDashoffset = "0"; ringFg.style.stroke = "#34C759"; }
       addLog('INFO', '全部完成');
-      setTimeout(() => { prog.style.display = 'none'; document.getElementById('bnp-mini').style.display = 'none'; document.getElementById('bnp-btn').style.display = 'flex'; showPanel(); }, 2000);
+      // delay for completion animation
+      setTimeout(() => { prog.style.display = 'none'; document.getElementById('bnp-mini').style.display = 'none'; document.getElementById('bnp-btn').style.display = 'flex'; showPanel(); }, 2500);
     } catch (e) {
       addLog('ERROR', `失败: ${e.message}`);
-      ptext.textContent = `❌ 失败: ${e.message}`; peta.textContent = ''; document.getElementById('bnp-mini-text').textContent = '❌ 失败'; document.getElementById('bnp-mini-sub').textContent = e.message;
+      ptext.textContent = `❌ 失败: ${e.message}`; peta.textContent = ""; document.getElementById("bnp-mini-text").textContent = "❌ 失败"; document.getElementById("bnp-mini-sub").textContent = e.message;
+      ptext.style.animation = "bnp-shake 0.4s cubic-bezier(.4,0,.2,1)";
+      if (ringFg) { ringFg.style.stroke = "#FF3B30"; ringFg.style.strokeDashoffset = "0"; }
       document.getElementById('bnp-mini').style.display = 'none'; document.getElementById('bnp-btn').style.display = 'flex'; showPanel();
     } finally { btn.disabled = false; isDownloading = false; }
   }
