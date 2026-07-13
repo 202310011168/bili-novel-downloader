@@ -2,7 +2,7 @@
 
 将 [哔哩轻小说](https://m.bilinovel.com) 的小说打包为 EPUB 电子书的 Tampermonkey 用户脚本。
 
-> 仅支持哔哩轻小说（bilinovel.com / linovelib.com），**不支持**轻小说文库（wenku8.net）。
+> 仅支持哔哩轻小说（bilinovel.com / linovelib.com）。
 
 ## 安装
 
@@ -23,7 +23,6 @@
 - 反爬调度（15次/分钟，触发反爬自动暂停）
 - 段落打乱还原
 - 无链接章节 URL 自动推导
-- 苹果风格 UI，可拖动
 - 日志持久化，支持跨会话查看
 
 ## License
