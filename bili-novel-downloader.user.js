@@ -1116,7 +1116,7 @@ const BNP = (function () {
       const currentVol = chPage ? findCurrentVolume(vols) : null;
       const volHtml = vols.map((v, i) => {
         const label = escH(v.name || novel.title);
-        const checked = currentVol ? (v === currentVol ? 'checked' : '') : 'checked';
+        const checked = '';
         const delay = i * 50;
         const hidden = currentVol && v !== currentVol && !_catalogExpanded;
         return `<div class="bnp-vol" data-vol="${i}" style="${hidden ? 'display:none' : `animation-delay:${delay}ms`}"><label class="bnp-vol-hdr"><input type="checkbox" class="bnp-vc" data-i="${i}" ${checked}><span class="vn">${label}</span></label></div>`;
