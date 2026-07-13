@@ -764,7 +764,11 @@ const BNP = (function () {
     .bnp-hdr button:hover { background: rgba(0,0,0,0.1); transform: rotate(90deg); }
 
     /* ---- 内容区 ---- */
-    .bnp-body { flex: 1; overflow-y: auto; padding: 18px 22px; -webkit-overflow-scrolling: touch; }
+    .bnp-body { flex: 1; overflow-y: auto; padding: 18px 22px; -webkit-overflow-scrolling: touch;
+      scrollbar-width: thin; scrollbar-color: var(--bnp-border) transparent; }
+    .bnp-body::-webkit-scrollbar { width: 4px; }
+    .bnp-body::-webkit-scrollbar-thumb { background: var(--bnp-border); border-radius: 2px; }
+    .bnp-body::-webkit-scrollbar-track { background: transparent; }
 
     /* ---- 小说信息 ---- */
     .bnp-info { display: flex; gap: 16px; margin-bottom: 16px; }
@@ -869,6 +873,10 @@ const BNP = (function () {
       font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px;
       padding: 10px 12px; border-radius: 12px; max-height: 300px;
       overflow-y: auto; line-height: 1.6;
+      scrollbar-width: thin; scrollbar-color: var(--bnp-border) transparent;
+    .bnp-log::-webkit-scrollbar { width: 4px; }
+    .bnp-log::-webkit-scrollbar-thumb { background: var(--bnp-border); border-radius: 2px; }
+    .bnp-log::-webkit-scrollbar-track { background: transparent; }
       margin-top: 6px; display: none;
     }
     .bnp-log:empty { display: none; }
