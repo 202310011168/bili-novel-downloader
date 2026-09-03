@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         哔哩轻小说打包下载器
 // @namespace    https://github.com/202310011168/bili-novel-downloader
-// @version      4.1.6
+// @version      4.1.7
 // @updateURL    https://raw.githubusercontent.com/202310011168/bili-novel-downloader/master/bili-novel-downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/202310011168/bili-novel-downloader/master/bili-novel-downloader.user.js
 // @description  将哔哩轻小说(linovelib.com/bilinovel.com/bilinovel.net)打包为EPUB电子书。支持分卷选择下载、插图、封面识别、反爬调度、段落还原。苹果风格UI。
@@ -872,15 +872,15 @@ const BNP = (function () {
     return `${t} ${v}.epub`;
   }
 
-  // 保存 EPUB：优先写入指定目录并自动建“书名”文件夹，否则退回浏览器默认下载
-  async function saveEpub(data, title, volumeName) {
+  // 保存 EPUB：优先写入指定目录并自动建“编号+书名”文件夹（文件夹名前缀书籍编号，如“1恶魔高校DxD”），否则退回浏览器默认下载
+  async function saveEpub(data, bookId, title, volumeName) {
     const fileName = buildEpubFileName(title, volumeName);
     addLog('INFO', `开始保存: ${fileName} (${(data.length / 1024 / 1024).toFixed(1)}MB)`);
     if (typeof window.showDirectoryPicker === 'function') {
       try {
         const dirHandle = await getSaveDirHandle();
         if (dirHandle) {
-          const folderName = sanitize(title);
+          const folderName = sanitize(String(bookId) + title);
           const folder = await dirHandle.getDirectoryHandle(folderName, { create: true });
           const file = await folder.getFileHandle(fileName, { create: true });
           const writable = await file.createWritable();
@@ -1525,8 +1525,8 @@ const BNP = (function () {
               }
             });
             addLog('INFO', `打包完成: ${(data.length/1024/1024).toFixed(1)}MB`);
-            // 与项目命名规则一致：书名建文件夹，文件名带标题
-            await saveEpub(data, novel.title, volName);
+            // 文件夹名=书籍编号+书名（如“1恶魔高校DxD”），文件夹内 EPUB 文件名仍带标题
+            await saveEpub(data, novel.id, novel.title, volName);
           } catch(e) { addLog('ERROR', `generate失败: ${e.message} ${e.stack}`); }
       }
 
