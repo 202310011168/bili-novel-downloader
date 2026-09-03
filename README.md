@@ -12,6 +12,25 @@
 
 ---
 
+## 📖 关于上游项目
+
+本用户脚本是 **JavaScript / Tampermonkey 移植版**，核心抓取与 EPUB 打包逻辑参考自：
+
+- 原作者：**Spark（Sparks）**
+- 原项目：**bili_novel_packer / 轻小说打包器**
+- GitHub：<https://github.com/Montaro2017/bili_novel_packer>
+- Gitee：<https://gitee.com/Montaro2017/bili_novel_packer>
+- 协议：MIT License，Copyright (c) 2023 Sparks
+
+使用方案说明：
+
+1. 本仓库保留上游 Dart 项目作为参考，不声明为完全独立原创；
+2. 上游更新时，本脚本会尽量同步抓取/打包逻辑；
+3. 浏览器端 UI、保存目录、脚本安装方式等为 JS 移植版附加功能；
+4. 使用与分发请遵守上游 MIT License，并保留原作者版权信息。
+
+---
+
 ## 📥 安装
 
 ### 前提条件
