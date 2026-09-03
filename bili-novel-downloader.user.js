@@ -1,14 +1,17 @@
 // ==UserScript==
 // @name         哔哩轻小说打包下载器
 // @namespace    https://github.com/202310011168/bili-novel-downloader
-// @version      4.1.2
+// @version      4.1.6
 // @updateURL    https://raw.githubusercontent.com/202310011168/bili-novel-downloader/master/bili-novel-downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/202310011168/bili-novel-downloader/master/bili-novel-downloader.user.js
-// @description  将哔哩轻小说(linovelib.com/bilinovel.com)打包为EPUB电子书。支持分卷选择下载、插图、封面识别、反爬调度、段落还原。苹果风格UI。
+// @description  将哔哩轻小说(linovelib.com/bilinovel.com/bilinovel.net)打包为EPUB电子书。支持分卷选择下载、插图、封面识别、反爬调度、段落还原。苹果风格UI。
 // @author       bili_novel_packer
 // @match        *://m.bilinovel.com/novel/*
 // @match        *://bilinovel.com/novel/*
 // @match        *://www.bilinovel.com/novel/*
+// @match        *://bilinovel.net/novel/*
+// @match        *://www.bilinovel.net/novel/*
+// @match        *://m.bilinovel.net/novel/*
 // @match        *://linovelib.com/novel/*
 // @match        *://www.linovelib.com/novel/*
 // @match        *://m.linovelib.com/novel/*
@@ -18,6 +21,9 @@
 // @connect      m.bilinovel.com
 // @connect      bilinovel.com
 // @connect      www.bilinovel.com
+// @connect      m.bilinovel.net
+// @connect      bilinovel.net
+// @connect      www.bilinovel.net
 // @connect      linovelib.com
 // @connect      www.linovelib.com
 // @connect      m.linovelib.com
@@ -28,7 +34,9 @@
 const BNP = (function () {
   'use strict';
 
-  const DOMAIN = 'https://m.bilinovel.com';
+  // 网站已迁移：linovelib.com -> m.bilinovel.com -> www.bilinovel.net
+  // 使用当前主域名，避免请求被重定向导致失败
+  const DOMAIN = 'https://www.bilinovel.net';
   const UA = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
 
   class RequestScheduler {
@@ -59,7 +67,7 @@ const BNP = (function () {
     }
   }
   const _pageScheduler = new RequestScheduler(15, 60000);
-  const _imageScheduler = new RequestScheduler(10, 1000);
+  const _imageScheduler = new RequestScheduler(10, 60000); // 与项目 RateLimitInterceptor(10, 1分钟) 对齐
 
   const logs = [];
   const LOG_KEY = 'bnp_log_store';
@@ -277,7 +285,7 @@ const BNP = (function () {
   }
   function esc(s) { return s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') : ''; }
   function escH(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
-  function sanitize(n) { return n.replace(/[:*?"\\\/<>|\0　]/g, ' ').replace(/^\.+|\.+$/g, '').replace(/\s+/g, ' ').trim(); }
+  function sanitize(n) { return n.replace(/[:*?"\\\/<>|\0　]/g, ' ').replace(/^\.+|\.+$/g, '').replace(/\s{2,}/g, ' ').trim(); }
   function detectExt(u) { if (u[0] === 0xFF && u[1] === 0xD8) return '.jpg'; if (u[0] === 0x89 && u[1] === 0x50) return '.png'; if (u[0] === 0x47 && u[1] === 0x49) return '.gif'; if (u[0] === 0x52 && u[1] === 0x49) return '.webp'; return '.jpg'; }
   function getImageDimensions(data) {
     try {
@@ -331,6 +339,55 @@ const BNP = (function () {
 
   const FALLBACK = { fixedLength: 20, seedMultiplier: 135, seedOffset: 234, a: 9302, c: 49397, mod: 233280 };
   const tplCache = {};
+  // 与项目 BiliNovelSource._allowedImageAttributes 对齐
+  const ALLOWED_IMAGE_ATTRS = new Set(['alt', 'class', 'dir', 'height', 'id', 'ismap', 'lang', 'longdesc', 'style', 'title', 'usemap', 'width', 'src', 'xml:lang']);
+  // 与项目 HTMLUtil._unescapeTable 对齐
+  const HTML_UNESCAPE_TABLE = {
+    '&quot;': '"', '＆quot;': '"', '&amp;': '&', '＆amp;': '&',
+    '&lt;': '<', '＆lt;': '<', '&gt;': '>', '＆gt;': '>',
+    '&nbsp;': ' ', '＆nbsp;': ' ', '&middot;': '·', '＆middot;': '·',
+    '&raquo;': '?', '＆raquo;': '?', '&frac14;': '?', '＆frac14;': '?',
+    '&frac12;': '?', '＆frac12;': '?', '&frac34;': '?', '＆frac34;': '?',
+    '&iquest;': '?', '＆iquest;': '?'
+  };
+  function _unescapeContent(el) {
+    function walk(node) {
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType === 3) {
+          let text = child.textContent;
+          for (const [k, v] of Object.entries(HTML_UNESCAPE_TABLE)) {
+            if (text.includes(k)) text = text.split(k).join(v);
+          }
+          child.textContent = text;
+        } else if (child.nodeType === 1) {
+          walk(child);
+        }
+      }
+    }
+    walk(el);
+  }
+  // 与项目 BiliNovelSource._fixImgSrc / _normalizeImg 对齐
+  function _fixImgSrc(img) {
+    let src = img.getAttribute('data-src') || img.getAttribute('src');
+    if (src == null) return;
+    if (src.startsWith('data:image')) return;
+    if (src.includes('<')) { img.remove(); return; }
+    if (src.startsWith('//')) src = 'https:' + src;
+    if (!/^https?:/i.test(src)) {
+      try { src = new URL(src, DOMAIN).href; } catch { src = DOMAIN + '/' + src.replace(/^\/+/, ''); }
+    }
+    src = src.replace('https://https://', 'https://').replace(/𝘣/g, 'b');
+    img.setAttribute('src', src);
+  }
+  function _normalizeImg(root) {
+    for (const img of root.querySelectorAll('img')) {
+      _fixImgSrc(img);
+      for (const attr of Array.from(img.attributes)) {
+        if (!ALLOWED_IMAGE_ATTRS.has(attr.name)) img.removeAttribute(attr.name);
+      }
+      img.setAttribute('alt', img.getAttribute('alt') || '');
+    }
+  }
 
   async function getShuffleParams(doc) {
     const scripts = doc.querySelectorAll('script[src*="chapterlog.js?v"]');
@@ -342,7 +399,7 @@ const BNP = (function () {
     let tpl = tplCache[src];
     if (tpl === undefined) {
       try { tpl = parseChapterLog(await gmFetch(src)) || null; } catch (e) { addLog('WARN', `chapterlog.js请求失败: ${e.message}`); tpl = null; }
-      if (!tpl) addLog('WARN', '⚠ chapterlog.js无法解析(网站已混淆)，跳过段落还原。若章节段落顺序错乱请反馈');
+      if (!tpl) addLog('WARN', '未解析到段落还原参数，已跳过还原（新版网站正文顺序正确，属正常情况）。若下载内容段落顺序错乱请反馈');
       tplCache[src] = tpl;
     }
     if (!tpl) return null;
@@ -350,6 +407,9 @@ const BNP = (function () {
   }
 
   function parseChapterLog(js) {
+    // 新版chapterlog.js(v1006c1.7+)已不引用chapterId，且服务端直接返回顺序正确的段落，
+    // 无需段落还原。若仍套用旧版解析结果，会把正确的段落顺序打乱，因此这里直接跳过。
+    if (!js.includes('chapterId')) return null;
     // 新版chapterlog.js已高度混淆，先用自定义base64解码尝试提取字符串
     // 混淆格式: var _0xXXXX=['str1','str2',...]; 其中str是自定义base64编码
     // 自定义字母表: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/=
@@ -397,16 +457,41 @@ const BNP = (function () {
   function evInt(expr) { if (!expr) return null; try { const tk = tokenize(expr.trim()); let p = 0; function pe() { let v = pt(); while (tk[p] === '+' || tk[p] === '-') { const o = tk[p++]; const r = pt(); v = o === '+' ? v + r : v - r; } return v; } function pt() { let v = pu(); while (tk[p] === '*' || tk[p] === '/' || tk[p] === '%') { const o = tk[p++]; const r = pu(); v = o === '*' ? v * r : o === '/' ? Math.trunc(v / r) : v % r; } return v; } function pu() { if (tk[p] === '-') { p++; return -pu(); } if (tk[p] === '+') { p++; return pu(); } if (tk[p] === '~') { p++; return ~pu(); } return pp(); } function pp() { if (tk[p] === '(') { p++; const v = pe(); if (tk[p] === ')') p++; return v; } const t = tk[p++]; return t.startsWith('0x') ? parseInt(t, 16) : parseInt(t); } const r = pe(); return isNaN(r) ? null : r; } catch { return null; } }
   function tokenize(e) { const t = []; let i = 0; while (i < e.length) { if (e[i] === ' ' || e[i] === '\t') { i++; continue; } if (e[i] === '0' && (e[i + 1] === 'x' || e[i + 1] === 'X')) { let j = i + 2; while (j < e.length && /[0-9a-fA-F]/.test(e[j])) j++; t.push(e.substring(i, j)); i = j; continue; } if (/[0-9]/.test(e[i])) { let j = i; while (j < e.length && /[0-9]/.test(e[j])) j++; t.push(e.substring(i, j)); i = j; continue; } if (e.startsWith('>>>', i)) { t.push('>>>'); i += 3; continue; } if (e.startsWith('>>', i)) { t.push('>>'); i += 2; continue; } if (e.startsWith('<<', i)) { t.push('<<'); i += 2; continue; } t.push(e[i]); i++; } return t; }
 
+  // 与 bili_novel_packer BiliNovelRestore 对齐：
+  // 只收集正文内容里的直接 <p> 节点，记录它们在完整 childNodes 中的槽位，
+  // 还原后只替换这些槽位，非 <p> 分隔物保持原位置。
   function unshuffle(content, params) {
-    const ps = Array.from(content.querySelectorAll('p')).filter(p => p.textContent.trim());
+    const childNodes = Array.from(content.childNodes);
+    const slots = [];
+    const ps = [];
+    for (let i = 0; i < childNodes.length; i++) {
+      const node = childNodes[i];
+      if (node.nodeType === 1 && node.localName === 'p' && node.innerHTML.replace(/\s+/g, '') !== '') {
+        slots.push(i);
+        ps.push(node);
+      }
+    }
     if (!ps.length) return;
+
     const fixed = [], shuffled = [];
     for (let i = 0; i < ps.length; i++) (i < params.fixedLength ? fixed : shuffled).push(i);
-    if (ps.length > params.fixedLength) { let seed = params.seed; for (let i = shuffled.length - 1; i > 0; i--) { seed = (seed * params.a + params.c) % params.mod; const j = Math.floor(seed / params.mod * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; } }
-    const idx = [...fixed, ...shuffled]; const mapped = new Array(ps.length);
-    for (let i = 0; i < ps.length; i++) mapped[idx[i]] = ps[i];
-    let ri = 0;
-    for (const ch of Array.from(content.children)) { if (ch.tagName === 'P' && ch.textContent.trim()) content.replaceChild(mapped[ri++].cloneNode(true), ch); }
+    if (ps.length > params.fixedLength) {
+      let seed = params.seed;
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        seed = (seed * params.a + params.c) % params.mod;
+        const j = Math.floor(seed / params.mod * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+    }
+    const idx = [...fixed, ...shuffled];
+    const restored = new Array(ps.length);
+    for (let i = 0; i < ps.length; i++) restored[idx[i]] = ps[i];
+
+    for (let i = 0; i < slots.length; i++) {
+      childNodes[slots[i]] = restored[i];
+    }
+    content.innerHTML = '';
+    for (const node of childNodes) content.appendChild(node);
   }
 
   // 清除网站添加的内容加载失败/截断提示
@@ -437,7 +522,21 @@ const BNP = (function () {
     }
   }
 
-  function getId(url) { const m = url.match(/(?:linovelib|bilinovel)\.com\/(?:novel|download)\/(\d+)/); if (!m) throw new Error('不支持的URL'); return m[1]; }
+  function getId(url) { const m = url.match(/(?:linovelib|bilinovel)\.(?:com|net)\/(?:novel|download)\/(\d+)/); if (!m) throw new Error('不支持的URL'); return m[1]; }
+
+  // 与项目 VolumeUtil 对齐：从卷名中识别丛书编号
+  const CHINESE_NUMBER_MAP = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10, '十一': 11, '十二': 12, '十三': 13, '十四': 14, '十五': 15, '十六': 16, '十七': 17, '十八': 18, '十九': 19, '二十': 20, '二十一': 21, '二十二': 22, '二十三': 23, '二十四': 24, '二十五': 25, '二十六': 26, '二十七': 27, '二十八': 28, '二十九': 29, '三十': 30 };
+  function getSeriesIndex(volumeName) {
+    return getSeriesIndexByLastNum(volumeName) ?? getSeriesIndexByVolumeName(volumeName);
+  }
+  function getSeriesIndexByLastNum(volumeName) {
+    const m = volumeName.match(/.*\s(\d+(?:\.\d)?)$/);
+    return m ? parseFloat(m[1]) : null;
+  }
+  function getSeriesIndexByVolumeName(volumeName) {
+    const m = volumeName.match(/第([一二三四五六七八九十]+)[卷话章]$/);
+    return m ? (CHINESE_NUMBER_MAP[m[1]] ?? null) : null;
+  }
 
   async function getNovel(url) {
     const id = getId(url); addLog('INFO', `获取小说: ${id}`);
@@ -454,15 +553,17 @@ const BNP = (function () {
     addLog('INFO', '获取目录...');
     const html = await fetchPage(`${DOMAIN}/novel/${id}/catalog`);
     const doc = new DOMParser().parseFromString(html, 'text/html');
+    // 与项目 v0.2.48 对齐：解析目录前先修复目录中的图片 src
+    doc.body.querySelectorAll('img').forEach(img => _fixImgSrc(img));
     const allLis = doc.querySelectorAll('.volume-chapters>li');
     addLog('INFO', `目录li元素: ${allLis.length}个`);
     if (allLis.length === 0) {
       addLog('WARN', `目录为空, html前500=${html.substring(0, 500)}`);
     }
-    const volumes = []; let cur = null;
+    const volumes = []; let cur = doc.querySelector('.chapter-bar') ? null : { name: '', chapters: [], cover: null };
     for (const li of allLis) {
       if (li.classList.contains('chapter-bar')) { if (cur) volumes.push(cur); cur = { name: li.textContent.trim(), chapters: [], cover: null }; }
-      else if (li.classList.contains('volume-cover')) { if (cur) { const img = li.querySelector('a img'); cur.cover = img?.getAttribute('src') || null; } }
+      else if (li.classList.contains('volume-cover')) { if (cur) { const img = li.querySelector('a img'); cur.cover = (img && (img.getAttribute('data-src') || img.getAttribute('src'))) || null; } }
       else if (li.classList.contains('jsChapter')) { const a = li.querySelector('a'); if (!a || !cur) continue; let href = a.getAttribute('href'); if (!href || href.includes('javascript')) { href = null; } else { href = DOMAIN + href; } cur.chapters.push({ name: a.textContent, url: href }); }
     }
     if (cur) volumes.push(cur);
@@ -501,31 +602,34 @@ const BNP = (function () {
     if (sp) unshuffle(el, sp);
     // 清除网站添加的内容加载失败提示
     _cleanContentError(el);
+    // 与项目 v0.2.48 HTMLUtil.unescape 对齐
+    _unescapeContent(el);
     const um = raw.match(/url_previous:'(.*?)',url_next:'(.*?)'/);
-    const fl = doc.querySelectorAll('#footlink a');
+    // 与 bili_novel_packer v0.2.46 同步：改用 .prevlink/.nextlink 类名精确定位，
+    // 不再依赖“第一个/最后一个链接”，避免 #footlink 中插入其他链接导致漏页
+    const prev = doc.querySelector('#footlink a.prevlink');
+    const next = doc.querySelector('#footlink a.nextlink');
     let nextUrl = null, prevChapterUrl = null, nextChapterUrl = null;
-    if (fl.length && um?.[1]) {
-      const prevText = fl[0]?.textContent || '';
+    // 与项目 v0.2.48 对齐：忽略“返回目录”链接，避免误判为上一章/下一章
+    const isCatalog = link => link && (link.textContent || '').trim() === '返回目录';
+    if (prev && um?.[1] && !isCatalog(prev)) {
+      const prevText = prev.textContent || '';
       if (prevText.includes('上一页') || prevText.includes('上一頁')) {
+        // 上一页链接（本章内分页翻页），脚本只向前翻页，无需记录 prevPage
       } else if (um[1]) {
         prevChapterUrl = DOMAIN + um[1];
       }
     }
-    if (fl.length && um?.[2]) {
-      const nextText = fl[fl.length - 1].textContent || '';
+    if (next && um?.[2] && !isCatalog(next)) {
+      const nextText = next.textContent || '';
       if (nextText.includes('下一页') || nextText.includes('下一頁')) {
         nextUrl = DOMAIN + um[2];
       } else if (um[2]) {
         nextChapterUrl = DOMAIN + um[2];
       }
     }
-    el.querySelectorAll('img').forEach(img => {
-      let src = img.dataset?.src || img.src;
-      if (!src) return;
-      if (src.includes('<')) { img.remove(); return; }
-      if (src.startsWith('//')) src = 'https:' + src;
-      img.src = src;
-    });
+    // 与项目 v0.2.48 对齐：修复图片 src 并清理属性
+    _normalizeImg(el);
     return { title, content: el.innerHTML, nextUrl, prevChapterUrl, nextChapterUrl };
   }
 
@@ -582,6 +686,15 @@ const BNP = (function () {
       const dims = getImageDimensions(data);
       if (dims) this._images[name] = dims;
     }
+    // 与项目 v0.2.49 LightNovelCoverDetector.addFirst 对齐
+    addFirst(name, data) {
+      const dims = getImageDimensions(data);
+      if (!dims) return;
+      const next = {};
+      next[name] = dims;
+      for (const [k, v] of Object.entries(this._images)) next[k] = v;
+      this._images = next;
+    }
     detectCover() {
       const entries = Object.entries(this._images);
       if (!entries.length) return null;
@@ -593,7 +706,7 @@ const BNP = (function () {
   }
 
   function buildEpub(opts) {
-    const { title, author, desc, cover, chapters, images, publisher, subjects } = opts;
+    const { title, author, desc, cover, chapters, images, publisher, subjects, source, series, seriesIndex } = opts;
     const zip = new JSZip();
     zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
     zip.file('META-INF/container.xml', '<?xml version="1.0" encoding="UTF-8"?>\n<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>');
@@ -623,9 +736,12 @@ const BNP = (function () {
     });
 
     const uid = uuid(), now = new Date().toISOString().replace(/\.\d+Z/, 'Z');
+    const sourceXml = source ? `<dc:source>${esc(source)}</dc:source>` : '';
     const publisherXml = publisher ? `<dc:publisher>${esc(publisher)}</dc:publisher>` : '';
     const subjectsXml = subjects && subjects.length ? subjects.map(s => `<dc:subject>${esc(s)}</dc:subject>`).join('') : '';
-    zip.file('OEBPS/content.opf', `<?xml version="1.0" encoding="UTF-8"?>\n<package xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" unique-identifier="bookId" version="3.0"><metadata><dc:identifier id="bookId">${uid}</dc:identifier><dc:language>zh-CN</dc:language><dc:title>${esc(title)}</dc:title><dc:creator>${esc(author)}</dc:creator>${desc ? `<dc:description>${esc(desc)}</dc:description>` : ''}${publisherXml}${subjectsXml}<meta property="dcterms:modified">${now}</meta></metadata><manifest><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="nav" href="toc.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="css" href="styles/style.css" media-type="text/css"/>${coverXml}${imgM.join('')}${chM.join('')}</manifest><spine toc="ncx">${chS.join('')}</spine></package>`);
+    const seriesXml = series ? `<meta name="calibre:series" content="${esc(series)}"/>` : '';
+    const seriesIndexXml = (seriesIndex !== undefined && seriesIndex !== null) ? `<meta name="calibre:series_index" content="${seriesIndex}"/>` : '';
+    zip.file('OEBPS/content.opf', `<?xml version="1.0" encoding="UTF-8"?>\n<package xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" unique-identifier="bookId" version="3.0"><metadata><dc:identifier id="bookId">${uid}</dc:identifier><dc:language>zh-CN</dc:language><dc:title>${esc(title)}</dc:title><dc:creator>${esc(author)}</dc:creator>${sourceXml}${desc ? `<dc:description>${esc(desc)}</dc:description>` : ''}${publisherXml}${subjectsXml}<meta property="dcterms:modified">${now}</meta>${seriesXml}${seriesIndexXml}</metadata><manifest><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="nav" href="toc.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="css" href="styles/style.css" media-type="text/css"/>${coverXml}${imgM.join('')}${chM.join('')}</manifest><spine toc="ncx">${chS.join('')}</spine></package>`);
 
     zip.file('OEBPS/toc.ncx', `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<ncx version="2005-1" xmlns="http://www.daisy.org/z3986/2005/ncx/"><head><meta content="${uid}" name="dtb:uid"/><meta content="1" name="dtb:depth"/></head><docTitle><text>${esc(title)}</text></docTitle><navMap>${nav.map((n, i) => `<navPoint id="np${i + 1}"><navLabel><text>${esc(n.title)}</text></navLabel><content src="${n.src}"/></navPoint>`).join('')}</navMap></ncx>`);
 
@@ -647,6 +763,138 @@ const BNP = (function () {
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // ---------- 保存到指定目录(File System Access API) ----------
+  // 参考项目 novel_packer：在当前目录下按书名建文件夹，EPUB 命名规则与 _getEpubName 一致
+  const _DIR_DB = 'bnp_save_dir_db';
+  const _DIR_STORE = 'dirs';
+  const _DIR_KEY = 'save_dir';
+  let _saveDirHandle = null;
+  let _saveDirSkipped = false; // 用户取消过一次选择后，本次会话不再重复弹窗
+
+  function _idbOpen() {
+    return new Promise((resolve, reject) => {
+      if (typeof indexedDB === 'undefined') return reject(new Error('no indexedDB'));
+      let req;
+      try { req = indexedDB.open(_DIR_DB, 1); } catch (e) { return reject(e); }
+      req.onupgradeneeded = () => { try { req.result.createObjectStore(_DIR_STORE); } catch {} };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async function _idbGet() {
+    try {
+      const db = await _idbOpen();
+      return await new Promise((resolve, reject) => {
+        let req;
+        try { req = db.transaction(_DIR_STORE).objectStore(_DIR_STORE).get(_DIR_KEY); } catch (e) { return reject(e); }
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      });
+    } catch { return null; }
+  }
+  async function _idbSet(handle) {
+    try {
+      const db = await _idbOpen();
+      await new Promise((resolve, reject) => {
+        let req;
+        try { req = db.transaction(_DIR_STORE, 'readwrite').objectStore(_DIR_STORE).put(handle, _DIR_KEY); } catch (e) { return reject(e); }
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      });
+    } catch (e) { addLog('WARN', `保存目录记忆失败: ${e.message}`); }
+  }
+
+  function updateDirUI() {
+    const el = document.getElementById('bnp-dir');
+    if (!el) return;
+    if (typeof window.showDirectoryPicker !== 'function') {
+      el.textContent = '📁 保存到浏览器默认下载';
+      el.title = '当前浏览器不支持选择目录，将保存到浏览器默认下载目录';
+      return;
+    }
+    el.textContent = _saveDirHandle ? '📁 已选保存目录' : '📁 点击选择保存目录';
+    el.title = _saveDirHandle ? '点击可更换保存目录' : '下载前点击此处选择保存目录';
+  }
+
+  async function pickSaveDir() {
+    if (typeof window.showDirectoryPicker !== 'function') {
+      addLog('INFO', '当前浏览器不支持选择目录，将保存到浏览器默认下载目录');
+      return;
+    }
+    try {
+      const h = await window.showDirectoryPicker({ mode: 'readwrite' });
+      _saveDirHandle = h;
+      await _idbSet(h);
+      updateDirUI();
+      addLog('INFO', '已选择保存目录');
+    } catch (e) {
+      if (e && e.name === 'AbortError') return; // 用户取消
+      addLog('WARN', `选择目录失败: ${e.message}`);
+    }
+  }
+
+  // 获取保存目录句柄(会话内缓存 + IndexedDB记忆)，不支持或未选择时返回 null
+  async function getSaveDirHandle() {
+    if (typeof window.showDirectoryPicker !== 'function') return null;
+    if (_saveDirHandle) return _saveDirHandle;
+    if (_saveDirSkipped) return null;
+    const saved = await _idbGet();
+    if (saved) {
+      try {
+        const perm = await saved.queryPermission({ mode: 'readwrite' });
+        if (perm === 'granted') {
+          _saveDirHandle = saved;
+          updateDirUI();
+          return saved;
+        }
+      } catch {}
+    }
+    try {
+      const h = await window.showDirectoryPicker({ mode: 'readwrite' });
+      _saveDirHandle = h;
+      await _idbSet(h);
+      updateDirUI();
+      return h;
+    } catch (e) {
+      if (e && e.name === 'AbortError') { _saveDirSkipped = true; return null; } // 用户取消
+      throw e;
+    }
+  }
+
+  // 文件名命名规则与项目 novel_packer._getEpubName 一致
+  function buildEpubFileName(title, volumeName) {
+    const t = sanitize(title);
+    const v = sanitize(volumeName);
+    if (!v) return `${t}.epub`;
+    if (v.startsWith(t)) return `${v}.epub`;
+    return `${t} ${v}.epub`;
+  }
+
+  // 保存 EPUB：优先写入指定目录并自动建“书名”文件夹，否则退回浏览器默认下载
+  async function saveEpub(data, title, volumeName) {
+    const fileName = buildEpubFileName(title, volumeName);
+    addLog('INFO', `开始保存: ${fileName} (${(data.length / 1024 / 1024).toFixed(1)}MB)`);
+    if (typeof window.showDirectoryPicker === 'function') {
+      try {
+        const dirHandle = await getSaveDirHandle();
+        if (dirHandle) {
+          const folderName = sanitize(title);
+          const folder = await dirHandle.getDirectoryHandle(folderName, { create: true });
+          const file = await folder.getFileHandle(fileName, { create: true });
+          const writable = await file.createWritable();
+          await writable.write(data);
+          await writable.close();
+          addLog('INFO', `已保存到 ${folderName}/${fileName}`);
+          return;
+        }
+        addLog('INFO', '未选择保存目录，改用浏览器默认下载');
+      } catch (e) {
+        addLog('WARN', `写入指定目录失败(${e.message})，改用浏览器默认下载`);
+      }
+    }
+    downloadFile(new Blob([data], { type: 'application/epub+zip' }), fileName);
   }
 
   GM_addStyle(`
@@ -914,6 +1162,8 @@ const BNP = (function () {
     }
     .bnp-btn-go:hover { box-shadow: 0 6px 20px var(--bnp-btn-shadow); }
     .bnp-btn-go:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
+    .bnp-dir { font-size: 12px; color: var(--bnp-text3); cursor: pointer; user-select: none; padding: 6px 10px; border-radius: 8px; transition: background .15s, color .15s; align-self: center; }
+    .bnp-dir:hover { background: var(--bnp-border); color: var(--bnp-text2); }
 
     /* ---- 迷你进度指示器 ---- */
     #bnp-mini {
@@ -1018,7 +1268,7 @@ const BNP = (function () {
     overlay.addEventListener('click', () => { if (isDownloading) minimizePanel(); else hidePanel(); });
 
     const panel = document.createElement('div'); panel.id = 'bnp-panel';
-    panel.innerHTML = `<div class="bnp-hdr"><h3>轻小说打包下载</h3><button id="bnp-close">&times;</button></div><div class="bnp-body"><div id="bnp-info-area"><div class="bnp-skeleton"><div class="spinner"></div><div>正在加载小说信息...</div></div></div><div id="bnp-vol-area" style="display:none"></div><div class="bnp-progress" id="bnp-progress"><div class="bnp-bar"><div class="bnp-bar-fill" id="bnp-fill"></div></div><div class="bnp-ptext" id="bnp-ptext"></div><div class="bnp-peta" id="bnp-peta"></div></div><div class="bnp-log-wrap"><div class="bnp-log-tbar"><span class="bnp-log-toggle" id="bnp-log-toggle">查看日志</span><span class="bnp-log-cnt" id="bnp-log-cnt">0</span><div class="bnp-log-tools"><button class="bnp-log-tool" id="bnp-log-cpy" title="复制日志">📋</button><button class="bnp-log-tool" id="bnp-log-clr" title="清除日志">🗑</button></div></div><div class="bnp-log" id="bnp-log"></div></div></div><div class="bnp-ftr"><button class="bnp-btn-cancel" id="bnp-cancel">取消</button><button class="bnp-btn-go" id="bnp-go">开始下载</button></div>`;
+    panel.innerHTML = `<div class="bnp-hdr"><h3>轻小说打包下载</h3><button id="bnp-close">&times;</button></div><div class="bnp-body"><div id="bnp-info-area"><div class="bnp-skeleton"><div class="spinner"></div><div>正在加载小说信息...</div></div></div><div id="bnp-vol-area" style="display:none"></div><div class="bnp-progress" id="bnp-progress"><div class="bnp-bar"><div class="bnp-bar-fill" id="bnp-fill"></div></div><div class="bnp-ptext" id="bnp-ptext"></div><div class="bnp-peta" id="bnp-peta"></div></div><div class="bnp-log-wrap"><div class="bnp-log-tbar"><span class="bnp-log-toggle" id="bnp-log-toggle">查看日志</span><span class="bnp-log-cnt" id="bnp-log-cnt">0</span><div class="bnp-log-tools"><button class="bnp-log-tool" id="bnp-log-cpy" title="复制日志">📋</button><button class="bnp-log-tool" id="bnp-log-clr" title="清除日志">🗑</button></div></div><div class="bnp-log" id="bnp-log"></div></div></div><div class="bnp-ftr"><span class="bnp-dir" id="bnp-dir" title="点击选择保存目录">📁 保存位置</span><span style="flex:1"></span><button class="bnp-btn-cancel" id="bnp-cancel">取消</button><button class="bnp-btn-go" id="bnp-go">开始下载</button></div>`;
     document.body.appendChild(panel);
 
     const mini = document.createElement('div'); mini.id = 'bnp-mini';
@@ -1036,6 +1286,9 @@ const BNP = (function () {
     };
     document.getElementById('bnp-log-cpy').onclick = copyLog;
     document.getElementById('bnp-log-clr').onclick = clearLog;
+    const dirEl = document.getElementById('bnp-dir');
+    if (dirEl) dirEl.onclick = () => pickSaveDir();
+    updateDirUI();
   }
 
 
@@ -1044,6 +1297,7 @@ const BNP = (function () {
     o.style.display = 'block'; p.style.display = 'flex'; b.style.display = 'none'; m.style.display = 'none';
     requestAnimationFrame(() => { o.classList.add('show'); p.classList.add('show'); });
     if (!window._bnpLoaded) { window._bnpLoaded = true; loadNovel(); }
+    updateDirUI();
     loadLogs();
   }
 
@@ -1163,6 +1417,10 @@ const BNP = (function () {
       addLog('SESSION', `─── 📥 ${novel.title} ───`);
       addLog('INFO', `下载${checked.length}卷`);
       minimizePanel();
+      // 提前请求保存目录(此时用户点击手势仍有效)，避免下载中途弹窗
+      if (typeof window.showDirectoryPicker === 'function') {
+        try { await getSaveDirHandle(); } catch (e) { addLog('WARN', `选择保存目录失败: ${e.message}`); }
+      }
       ptext.textContent = '获取解密密钥...';
       document.getElementById('bnp-mini-text').textContent = '获取密钥...';
       await getSecretMap();
@@ -1222,25 +1480,39 @@ const BNP = (function () {
         }
 
           fill.style.width = '90%'; ptext.textContent = `📦 打包: ${volName}`; peta.textContent = '正在生成 EPUB...'; document.getElementById('bnp-mini-text').textContent = `打包中`; document.getElementById('bnp-mini-sub').textContent = volName; if (ringFg) ringFg.style.strokeDashoffset = '7.5';
-          const coverUrl = (vol.cover && !vol.cover.includes('no.svg')) ? vol.cover : null;
-          let cover = new Uint8Array(0);
+          const coverUrl = (vol.cover && !vol.cover.includes('no.svg') && !vol.cover.includes('book-cover-no')) ? vol.cover : null;
+          const detector = new CoverDetector();
+          let volumeCoverData = new Uint8Array(0);
           if (coverUrl) {
-            try { cover = await fetchImage(coverUrl); addLog('INFO', `封面下载: ${(cover.length/1024).toFixed(0)}KB`); } catch(e) { addLog('WARN', `封面下载失败: ${e.message}`); }
+            try {
+              volumeCoverData = await fetchImage(coverUrl);
+              addLog('INFO', `卷封面下载: ${(volumeCoverData.length/1024).toFixed(0)}KB`);
+            } catch(e) { addLog('WARN', `卷封面下载失败: ${e.message}`); }
           } else {
-            addLog('INFO', '卷封面是占位符，用 CoverDetector 自动选封面...');
-            const detector = new CoverDetector();
-            for (const [fn, data] of Object.entries(allImages)) {
-              if (data.length >= 1000) detector.add(fn, data);
-            }
-            const coverName = detector.detectCover();
-            if (coverName) {
-              cover = allImages[coverName];
-              const dims = getImageDimensions(cover);
-              addLog('INFO', `封面自动选择: ${coverName}${dims ? ` (${dims.width}x${dims.height})` : ''}`);
-            }
+            addLog('INFO', '无卷封面（占位图），将由 CoverDetector 从章节插图中选择...');
+          }
+          // 与项目 v0.2.49 对齐：卷封面作为首选候选，但仍需通过比例检测
+          if (volumeCoverData.length > 0) detector.addFirst('__volume_cover__', volumeCoverData);
+          for (const [fn, data] of Object.entries(allImages)) {
+            if (data.length >= 1000) detector.add(fn, data);
+          }
+          const coverName = detector.detectCover();
+          let cover = new Uint8Array(0);
+          if (coverName === '__volume_cover__') {
+            cover = volumeCoverData;
+            const dims = getImageDimensions(cover);
+            addLog('INFO', `封面采用卷封面${dims ? ` (${dims.width}x${dims.height})` : ''}`);
+          } else if (coverName) {
+            cover = allImages[coverName];
+            const dims = getImageDimensions(cover);
+            addLog('INFO', `封面自动选择: ${coverName}${dims ? ` (${dims.width}x${dims.height})` : ''}`);
           }
           addLog('INFO', `打包: ${volChapters.length}章, 图片${Object.keys(allImages).length}张, 封面${cover.length > 0 ? '有' : '无'}`);
-          const zip = buildEpub({ title: `${novel.title} ${volName}`, author: novel.author, desc: novel.description, publisher: novel.publisher, subjects: novel.tags, cover: cover?.length > 0 ? cover : null, chapters: volChapters, images: allImages });
+          // 与项目 _packVolume 对齐：卷名以书名开头时，EPUB 标题直接用卷名
+          const docTitle = volName.startsWith(novel.title) ? volName : `${novel.title} ${volName}`;
+          // 与项目 VolumeUtil.getSeriesIndex 对齐：识别到丛书编号时写入 Calibre 元数据
+          const seriesIndex = getSeriesIndex(volName);
+          const zip = buildEpub({ title: docTitle, author: novel.author, desc: novel.description, publisher: novel.publisher, subjects: novel.tags, source: novel.url, series: seriesIndex !== null ? novel.title : null, seriesIndex, cover: cover?.length > 0 ? cover : null, chapters: volChapters, images: allImages });
           addLog('INFO', `JSZip文件数: ${Object.keys(zip.files).length}，打包中...`);
           try {
             const data = await zip.generateAsync({
@@ -1253,9 +1525,8 @@ const BNP = (function () {
               }
             });
             addLog('INFO', `打包完成: ${(data.length/1024/1024).toFixed(1)}MB`);
-            const epubName = volName.includes(novel.title) ? sanitize(volName) : sanitize(`${novel.title} ${volName}`);
-            downloadFile(new Blob([data], { type: 'application/epub+zip' }), epubName + '.epub');
-            addLog('INFO', '下载已触发');
+            // 与项目命名规则一致：书名建文件夹，文件名带标题
+            await saveEpub(data, novel.title, volName);
           } catch(e) { addLog('ERROR', `generate失败: ${e.message} ${e.stack}`); }
       }
 
