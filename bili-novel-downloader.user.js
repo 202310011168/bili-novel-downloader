@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         哔哩轻小说打包下载器
 // @namespace    https://github.com/202310011168/bili-novel-downloader
-// @version      4.1.7
+// @version      4.1.8
 // @updateURL    https://raw.githubusercontent.com/202310011168/bili-novel-downloader/master/bili-novel-downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/202310011168/bili-novel-downloader/master/bili-novel-downloader.user.js
 // @description  将哔哩轻小说(linovelib.com/bilinovel.com/bilinovel.net)打包为EPUB电子书。支持分卷选择下载、插图、封面识别、反爬调度、段落还原。苹果风格UI。
@@ -1476,7 +1476,7 @@ const BNP = (function () {
             }
             if (imgOk > 0) addLog('INFO', `  章节${done}: ${imgOk}张图片已下载${imgFail > 0 ? `, ${imgFail}张失败` : ''}`);
             volChapters.push({ title: title || ch.name, content: container.innerHTML });
-          } catch (e) { addLog('ERROR', `章节失败: ${ch.name} - ${e.message}`); volChapters.push({ title: ch.name, content: `<p style="color:#FF3B30">获取失败</p>` }); }
+          } catch (e) { addLog('ERROR', `章节失败: ${ch.name} - ${e.message}`); volChapters.push({ title: ch.name, content: `<p style="color:#FF3B30">获取失败：${esc(e.message)}${ch.url ? `（${esc(ch.url)}）` : ''}</p>` }); }
         }
 
           fill.style.width = '90%'; ptext.textContent = `📦 打包: ${volName}`; peta.textContent = '正在生成 EPUB...'; document.getElementById('bnp-mini-text').textContent = `打包中`; document.getElementById('bnp-mini-sub').textContent = volName; if (ringFg) ringFg.style.strokeDashoffset = '7.5';
