@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         哔哩轻小说打包下载器
 // @namespace    https://github.com/202310011168/bili-novel-downloader
-// @version      4.1.8
+// @version      4.1.9
 // @updateURL    https://raw.githubusercontent.com/202310011168/bili-novel-downloader/master/bili-novel-downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/202310011168/bili-novel-downloader/master/bili-novel-downloader.user.js
 // @description  将哔哩轻小说(linovelib.com/bilinovel.com/bilinovel.net)打包为EPUB电子书。支持分卷选择下载、插图、封面识别、反爬调度、段落还原。苹果风格UI。
@@ -71,8 +71,8 @@ const BNP = (function () {
 
   const logs = [];
   const LOG_KEY = 'bnp_log_store';
-  const MAX_LOG = 3000;
-  const MAX_DOM_LOG = 300; // DOM中最多保留300条，其余的只有内存+localStorage
+  const MAX_LOG = 1500; // 内存与 localStorage 统一只保留最近 1500 条，避免长时间下载无限累积、写爆配额
+  const MAX_DOM_LOG = 300; // DOM中最多保留300条，其余只保留在内存+localStorage
   let _logEl = null, _badgeEl = null, _logDirty = false, _logFlushing = false;
   const _logQueue = [];
 
@@ -91,8 +91,12 @@ const BNP = (function () {
     if (!_logQueue.length) return;
     _ensureLogRefs();
     if (!_logEl) return;
-    // 日志面板隐藏时暂不追加DOM，等打开时再渲染
-    if (!_isLogVisible()) return;
+    // 日志面板隐藏时暂不追加DOM，等打开时再渲染；
+    // 但队列不能无限累积——DOM 只会显示最近 MAX_DOM_LOG 条，因此隐藏时只保留最新这些即可
+    if (!_isLogVisible()) {
+      if (_logQueue.length > MAX_DOM_LOG) _logQueue.splice(0, _logQueue.length - MAX_DOM_LOG);
+      return;
+    }
     const frag = document.createDocumentFragment();
     let batch;
     while ((batch = _logQueue.splice(0, 50)).length) {
@@ -133,6 +137,7 @@ const BNP = (function () {
     const now = new Date();
     const entry = { t: now.toLocaleTimeString(), ts: now.getTime(), l: level, m: msg };
     logs.push(entry);
+    if (logs.length > MAX_LOG) logs.splice(0, logs.length - MAX_LOG); // 只保留最近 MAX_LOG 条
     _logQueue.push(entry);
     _scheduleLogFlush();
 
@@ -220,6 +225,7 @@ const BNP = (function () {
   async function fetchPage(url) {
     return _pageScheduler.run(async () => {
       for (let i = 0; i < 3; i++) {
+        throwIfCancelled(); // “停止下载”后不再继续重试，快速退出
         try {
           const html = await gmFetch(url, 'text', 30000);
           if (html.includes('Cloudflare to restrict access') || html.includes('503 Service')) {
@@ -263,6 +269,16 @@ const BNP = (function () {
     if (sec < 3600) return `${Math.floor(sec / 60)}分${Math.round(sec % 60)}秒`;
     return `${Math.floor(sec / 3600)}时${Math.floor((sec % 3600) / 60)}分`;
   }
+  // ---- 协作式取消：下载过程中可随时“停止下载” ----
+  // 在关键循环（每页/每章/每张插图）处检查 _cancelRequested，命中则抛带 _cancelled 哨兵的错误。
+  // 不打断在途的 GM_xmlhttpRequest（单次请求已有界），页面/插图完成后即优雅停止。
+  let _cancelRequested = false;
+  function requestCancel() { _cancelRequested = true; }
+  function resetCancel() { _cancelRequested = false; }
+  function throwIfCancelled() {
+    if (_cancelRequested) { const e = new Error('下载已取消'); e._cancelled = true; throw e; }
+  }
+
   async function fetchImageWithRetry(src, retries = 2) {
     let lastErr;
     for (let i = 0; i <= retries; i++) {
@@ -576,16 +592,65 @@ const BNP = (function () {
     return volumes;
   }
 
-  async function getChapter(url) {
+  // 单章页数上限，仅作异常兜底（防畸形/循环分页死循环）。不做整章“墙钟”超时：
+  // bilinovel 按 nextUrl 逐页向前，超长章（如“全一册”整本书合并为一章、可达上百页）必须允许其完整下载；
+  // 每页在 fetchPage 内已有请求级30s超时+3次重试+反爬暂停，不会无限卡住。
+  const MAX_CHAPTER_PAGES = 2000;
+  // 单页硬失败后的长退避重试时长：用于扛过瞬时 Cloudflare/网络波动，
+  // 避免超长章(几十上百页)因某一页瞬时失败而整章后半截断
+  const FAILED_PAGE_RETRY_DELAY = 20000;
+  async function getChapter(url, onPage) {
     if (!url) return { title: '', content: '' };
-    let title = '', html = '', next = url;
-    do {
-      const page = await getPage(next);
-      if (page.title && !page.title.includes('〇')) title = page.title;
-      html += page.content;
-      next = page.nextUrl;
-    } while (next);
-    return { title, content: html };
+    let title = '', parts = [], next = url, pageNo = 0, truncated = false;
+    const seen = new Set();
+    while (next) {
+      throwIfCancelled(); // 每翻一页前检查“停止下载”
+      if (pageNo >= MAX_CHAPTER_PAGES) {
+        addLog('WARN', `章节页数超过上限(${MAX_CHAPTER_PAGES})，已停止翻页`);
+        parts.push('<p style="color:#FF9F0A">（章节分页数异常，正文到此截断）</p>');
+        truncated = true;
+        break;
+      }
+      if (seen.has(next)) {
+        addLog('WARN', `检测到重复分页地址，已停止: ${next}`);
+        truncated = true;
+        break;
+      }
+      seen.add(next);
+      pageNo++;
+      if (onPage) onPage(pageNo);
+      try {
+        const page = await getPage(next);
+        if (page.title && !page.title.includes('〇')) title = page.title;
+        parts.push(page.content);
+        next = page.nextUrl;
+      } catch (e) {
+        if (e && e._cancelled) throw e; // 用户取消时直接向上冒泡，不要当普通失败截断处理
+        addLog('ERROR', `第${pageNo}页获取失败(${next}): ${e.message}`);
+        // fetchPage 内已有 3 次快速重试(各间隔2s)，仍失败一般是瞬时反爬/网络波动。
+        // 超长章直接截断会丢掉剩余几十页，故这里等长一点再整页重试一次；
+        // “内容为空”是确定性解析失败，重试无意义，直接截断。
+        if (e.message !== '内容为空') {
+          try {
+            addLog('WARN', `第${pageNo}页长退避重试中(约${FAILED_PAGE_RETRY_DELAY/1000}s)...`);
+            await sleep(FAILED_PAGE_RETRY_DELAY);
+            throwIfCancelled(); // 等待期间用户点了停止则退出
+            const page = await getPage(next);
+            if (page.title && !page.title.includes('〇')) title = page.title;
+            parts.push(page.content);
+            next = page.nextUrl;
+            continue; // 重试成功，继续翻页
+          } catch (e2) {
+            if (e2 && e2._cancelled) throw e2;
+            addLog('ERROR', `第${pageNo}页长退避重试仍失败: ${e2.message}`);
+          }
+        }
+        parts.push(`<p style="color:#FF9F0A">⚠ 第 ${pageNo} 页获取失败：${esc(e.message)}。正文到此中断，本章可能不完整。</p>`);
+        truncated = true;
+        break;
+      }
+    }
+    return { title, content: parts.join(''), truncated, pageCount: pageNo };
   }
 
   async function getPage(url) {
@@ -656,7 +721,10 @@ const BNP = (function () {
         try {
           const page = await getPage(next.url);
           if (page.prevChapterUrl) return page.prevChapterUrl;
-        } catch (e) { addLog('WARN', `推导URL失败(下一章): ${e.message}`); }
+        } catch (e) {
+          if (e && e._cancelled) throw e;
+          addLog('WARN', `推导URL失败(下一章): ${e.message}`);
+        }
       }
     }
 
@@ -665,16 +733,21 @@ const BNP = (function () {
       const prev = all[idx - 1];
       if (prev.url) {
         try {
-          let url = prev.url;
-          for (let i = 0; i < 20; i++) {
+          // 逐页向前直到本章末尾，不再写死20页——兼容超长合并章（如“全一册”可达上百页），
+          // 其“下一章”链接只出现在最后一页
+          let url = prev.url, guard = 0;
+          const seen = new Set();
+          while (url && guard < MAX_CHAPTER_PAGES && !seen.has(url)) {
+            seen.add(url); guard++;
             const page = await getPage(url);
-            if (!page.nextUrl) {
-              if (page.nextChapterUrl) return page.nextChapterUrl;
-              break;
-            }
+            if (page.nextChapterUrl) return page.nextChapterUrl;
+            if (!page.nextUrl) break;
             url = page.nextUrl;
           }
-        } catch (e) { addLog('WARN', `推导URL失败(上一章): ${e.message}`); }
+        } catch (e) {
+          if (e && e._cancelled) throw e;
+          addLog('WARN', `推导URL失败(上一章): ${e.message}`);
+        }
       }
     }
     return null;
@@ -1203,6 +1276,18 @@ const BNP = (function () {
       font-size: 11px; color: var(--bnp-text3);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
+    /* 小胶囊上的“停止下载”按钮（仅在下载中显示） */
+    .bnp-mini-stop {
+      position: absolute; top: -8px; right: -8px; z-index: 2;
+      width: 22px; height: 22px; padding: 0;
+      border: 0; border-radius: 50%;
+      background: #FF3B30; color: #fff;
+      font-size: 12px; font-weight: 700; line-height: 1;
+      display: none; align-items: center; justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    .bnp-mini-stop:hover { background: #E0332A; }
 
     /* ---- 加载骨架 ---- */
     .bnp-skeleton {
@@ -1272,14 +1357,31 @@ const BNP = (function () {
     document.body.appendChild(panel);
 
     const mini = document.createElement('div'); mini.id = 'bnp-mini';
-    mini.innerHTML = '<div class="bnp-mini-ring"><svg width="28" height="28" viewBox="0 0 28 28"><circle class="bg" cx="14" cy="14" r="12"/><circle class="fg" id="bnp-mini-ring-fg" cx="14" cy="14" r="12"/></svg></div><div class="bnp-mini-body"><div class="bnp-mini-text" id="bnp-mini-text">下载中...</div><div class="bnp-mini-sub" id="bnp-mini-sub"></div></div>';
+    mini.innerHTML = '<div class="bnp-mini-ring"><svg width="28" height="28" viewBox="0 0 28 28"><circle class="bg" cx="14" cy="14" r="12"/><circle class="fg" id="bnp-mini-ring-fg" cx="14" cy="14" r="12"/></svg></div><div class="bnp-mini-body"><div class="bnp-mini-text" id="bnp-mini-text">下载中...</div><div class="bnp-mini-sub" id="bnp-mini-sub"></div></div><button type="button" id="bnp-mini-stop" class="bnp-mini-stop" title="停止下载">✕</button>';
     document.body.appendChild(mini);
     const miniMoved = makeDraggable(mini);
     mini.addEventListener('click', () => { if (miniMoved()) return; showPanel(); });
 
     document.getElementById('bnp-close').onclick = () => isDownloading ? minimizePanel() : hidePanel();
-    document.getElementById('bnp-cancel').onclick = () => isDownloading ? minimizePanel() : hidePanel();
+    document.getElementById('bnp-cancel').onclick = () => {
+      if (isDownloading) {
+        // 下载中点击 → 真正停止（原逻辑只是收起面板），各抓取循环会在下个检查点优雅退出
+        requestCancel();
+        document.getElementById('bnp-mini-text').textContent = '⏹ 停止中...';
+        document.getElementById('bnp-mini-sub').textContent = '';
+        addLog('INFO', '取消请求已发出，正在停止…');
+      } else hidePanel();
+    };
     document.getElementById('bnp-go').onclick = startDownload;
+    document.getElementById('bnp-mini-stop').addEventListener('click', (ev) => {
+      ev.stopPropagation(); ev.preventDefault();
+      if (isDownloading) {
+        requestCancel();
+        document.getElementById('bnp-mini-text').textContent = '⏹ 停止中...';
+        document.getElementById('bnp-mini-sub').textContent = '';
+        addLog('INFO', '取消请求已发出，正在停止…');
+      }
+    });
     document.getElementById('bnp-log-toggle').onclick = () => {
       const log = document.getElementById('bnp-log'), tog = document.getElementById('bnp-log-toggle');
       if (log.style.display === 'none' || !log.style.display) { log.style.display = 'block'; tog.textContent = '收起日志'; loadLogs(); _flushLogQueueImmediate(); } else { log.style.display = 'none'; tog.textContent = '查看日志'; }
@@ -1299,6 +1401,7 @@ const BNP = (function () {
     if (!window._bnpLoaded) { window._bnpLoaded = true; loadNovel(); }
     updateDirUI();
     loadLogs();
+    _flushLogQueueImmediate(); // 展开面板时立即渲染（含此前隐藏/最小化期间暂存的日志）
   }
 
   function hidePanel() {
@@ -1401,11 +1504,24 @@ const BNP = (function () {
   async function startDownload() {
     const btn = document.getElementById('bnp-go');
     btn.disabled = true; isDownloading = true;
+    resetCancel(); // 新会话重置“停止下载”标志
     const prog = document.getElementById('bnp-progress'), fill = document.getElementById('bnp-fill'), ptext = document.getElementById('bnp-ptext'), peta = document.getElementById('bnp-peta');
     const ringFg = document.getElementById('bnp-mini-ring-fg');
+    const miniStopBtn = document.getElementById('bnp-mini-stop');
     prog.style.display = 'block';
     document.getElementById('bnp-log').style.display = 'block';
     document.getElementById('bnp-log-toggle').textContent = '收起日志';
+
+    // 重置上次会话的完成态：避免“完成/取消后再下载”时残留绿色进度条、小胶囊绿环/旧文案
+    fill.classList.remove("done"); fill.style.width = '0%';
+    ptext.classList.remove("done"); ptext.textContent = ''; peta.textContent = '';
+    const miniEl = document.getElementById('bnp-mini');
+    if (miniEl) miniEl.classList.remove("done");
+    const miniText = document.getElementById('bnp-mini-text');
+    if (miniText) miniText.textContent = '';
+    const miniSub = document.getElementById('bnp-mini-sub');
+    if (miniSub) miniSub.textContent = '';
+    if (ringFg) { ringFg.style.stroke = ''; ringFg.style.strokeDashoffset = '75.4'; }
 
     try {
       const novel = window._bnpNovel, vols = window._bnpVols;
@@ -1417,21 +1533,22 @@ const BNP = (function () {
       addLog('SESSION', `─── 📥 ${novel.title} ───`);
       addLog('INFO', `下载${checked.length}卷`);
       minimizePanel();
+      if (miniStopBtn) miniStopBtn.style.display = 'inline-flex'; // 下载中在小胶囊上显示“停止下载”
       // 提前请求保存目录(此时用户点击手势仍有效)，避免下载中途弹窗
       if (typeof window.showDirectoryPicker === 'function') {
         try { await getSaveDirHandle(); } catch (e) { addLog('WARN', `选择保存目录失败: ${e.message}`); }
       }
-      ptext.textContent = '获取解密密钥...';
-      document.getElementById('bnp-mini-text').textContent = '获取密钥...';
-      await getSecretMap();
+      // 新版正文已无需解密，不再发起无用的 readtools.js 请求（原 getSecretMap 结果未被使用）
+      ptext.textContent = '开始下载...';
+      document.getElementById('bnp-mini-text').textContent = '下载中...';
 
       const total = checked.reduce((s, v) => s + v.chapters.length, 0);
-      let done = 0, startTime = Date.now(), imgIdx = 0;
+      let done = 0, startTime = Date.now(), imgIdx = 0, chapterFailures = 0;
 
       for (const vol of checked) {
         const volName = vol.name || novel.title;
         addLog('INFO', `卷: ${volName} (${vol.chapters.length}章)`);
-        const volChapters = [], allImages = {};
+        const volChapters = [], allImages = {}, imgSrcMap = {}; // imgSrcMap: 卷内按URL去重插图
 
         for (const ch of vol.chapters) {
           done++;
@@ -1448,37 +1565,58 @@ const BNP = (function () {
           document.getElementById('bnp-mini-text').textContent = `${done}/${total}`;
           document.getElementById('bnp-mini-sub').textContent = ch.name;
           addLog('INFO', `获取章节 ${done}/${total}: ${ch.name} URL=${ch.url || 'null'}`);
+          throwIfCancelled(); // 每章开始前检查“停止下载”
 
           if (!ch.url) {
             ch.url = await resolveChapterUrl(ch, vols);
             if (ch.url) addLog('INFO', `  URL已推导: ${ch.url}`);
           }
 
-          if (!ch.url) { addLog('WARN', `跳过: ${ch.name} (无URL)`); volChapters.push({ title: ch.name, content: '<p>（无链接）</p>' }); continue; }
+          if (!ch.url) { chapterFailures++; addLog('WARN', `跳过: ${ch.name} (无URL，内容缺失)`); volChapters.push({ title: ch.name, content: '<p style="color:#FF9F0A">（无链接，内容缺失）</p>' }); continue; }
 
           try {
-            // 带120秒超时的章节获取
-            const { title, content } = await Promise.race([
-              getChapter(ch.url),
-              new Promise((_, rej) => setTimeout(() => rej(new Error('章节获取超时(120s)')), 120000))
-            ]);
+            // 不再对整章做墙钟超时：超长章(全一册，数十上百页)会因耗时超过120s而永远下载失败。
+            // 逐页获取即可，每页已在 fetchPage 内带30s请求超时+3次重试+反爬暂停，单页最坏~2分钟有界。
+            // 中途某页失败则截断并保留已下载前缀(带黄字提示)，不再整章丢失。onPage 用于刷新长章进度。
+            const { title, content, truncated } = await getChapter(ch.url, p => { peta.textContent = `📖 ${ch.name} · 第 ${p} 页...`; });
+            if (truncated) {
+              chapterFailures++;
+              addLog('WARN', `章节不完整(中途截断): ${ch.name}`);
+              // 首页即失败说明网络/站点当前不可用，继续只会批量产出空文件——中止本次下载
+              if (content.replace(/<[^>]*>/g, '').trim().length < 200) {
+                const abortErr = new Error(`章节「${ch.name}」正文无法获取（首页即失败），已中止以免生成空文件`);
+                abortErr._abortDownload = true;
+                throw abortErr;
+              }
+            }
             const container = document.createElement('div');
             container.innerHTML = content;
-            const imgs = container.querySelectorAll('img');
+            const imgs = Array.from(container.querySelectorAll('img')).filter(img => img.src);
             let imgOk = 0, imgFail = 0;
-            for (const img of imgs) {
-              let src = img.src;
-              if (!src) continue;
+            for (let ii = 0; ii < imgs.length; ii++) {
+              throwIfCancelled(); // 每张图前检查“停止下载”
+              const img = imgs[ii];
+              const src = img.src;
+              if (imgs.length > 1) peta.textContent = `📷 插图 ${ii + 1}/${imgs.length}`;
+              // 同一插图在多个页面重复出现时只下载一次，复用同一文件，省时间+减体积
+              const cached = imgSrcMap[src];
+              if (cached) { img.src = cached; imgOk++; continue; }
               try {
                 const data = await _imageScheduler.run(() => fetchImageWithRetry(src));
-                if (data?.length > 0) { const ext = detectExt(data); const fn = `images/${String(++imgIdx).padStart(6, '0')}${ext}`; allImages[fn] = data; img.src = fn; imgOk++; }
+                if (data?.length > 0) { const ext = detectExt(data); const fn = `images/${String(++imgIdx).padStart(6, '0')}${ext}`; imgSrcMap[src] = fn; allImages[fn] = data; img.src = fn; imgOk++; }
               } catch (e) { imgFail++; addLog('WARN', `图片失败(${src.substring(0,60)}): ${e.message}`); }
             }
             if (imgOk > 0) addLog('INFO', `  章节${done}: ${imgOk}张图片已下载${imgFail > 0 ? `, ${imgFail}张失败` : ''}`);
             volChapters.push({ title: title || ch.name, content: container.innerHTML });
-          } catch (e) { addLog('ERROR', `章节失败: ${ch.name} - ${e.message}`); volChapters.push({ title: ch.name, content: `<p style="color:#FF3B30">获取失败：${esc(e.message)}${ch.url ? `（${esc(ch.url)}）` : ''}</p>` }); }
+          } catch (e) {
+            if (e && (e._abortDownload || e._cancelled)) throw e; // 空正文中止/用户取消，冒泡到外层统一提示
+            chapterFailures++;
+            addLog('ERROR', `章节失败: ${ch.name} - ${e.message}`);
+            volChapters.push({ title: ch.name, content: `<p style="color:#FF3B30">获取失败：${esc(e.message)}${ch.url ? `（${esc(ch.url)}）` : ''}</p>` });
+          }
         }
 
+          throwIfCancelled(); // 取消时不再打包/保存当前卷
           fill.style.width = '90%'; ptext.textContent = `📦 打包: ${volName}`; peta.textContent = '正在生成 EPUB...'; document.getElementById('bnp-mini-text').textContent = `打包中`; document.getElementById('bnp-mini-sub').textContent = volName; if (ringFg) ringFg.style.strokeDashoffset = '7.5';
           const coverUrl = (vol.cover && !vol.cover.includes('no.svg') && !vol.cover.includes('book-cover-no')) ? vol.cover : null;
           const detector = new CoverDetector();
@@ -1526,27 +1664,54 @@ const BNP = (function () {
             });
             addLog('INFO', `打包完成: ${(data.length/1024/1024).toFixed(1)}MB`);
             // 文件夹名=书籍编号+书名（如“1恶魔高校DxD”），文件夹内 EPUB 文件名仍带标题
+            throwIfCancelled(); // 打包期间收到取消则不再落盘
             await saveEpub(data, novel.id, novel.title, volName);
-          } catch(e) { addLog('ERROR', `generate失败: ${e.message} ${e.stack}`); }
+          } catch(e) {
+            if (e && e._cancelled) throw e;
+            addLog('ERROR', `generate失败: ${e.message} ${e.stack}`);
+          }
       }
 
       fill.classList.add("done"); fill.style.width = "100%";
-      document.getElementById("bnp-mini").classList.add("done");
-      _crossFadeText(ptext, "✅ 全部完成!");
-      ptext.classList.add("done");
-      document.getElementById("bnp-mini-text").innerHTML = "✅ 完成";
-      peta.textContent = "";
-      if (ringFg) { ringFg.style.strokeDashoffset = "0"; ringFg.style.stroke = "#34C759"; }
-      addLog('INFO', '全部完成');
+      if (_cancelRequested) {
+        // 取消请求在“当前卷已保存完成”之后才生效：已保存的卷保留，但不再显示“全部完成”
+        addLog('WARN', '已停止：当前已完成的卷已保存，不再继续');
+        document.getElementById("bnp-mini").classList.add("done");
+        _crossFadeText(ptext, '⏹ 已停止');
+        ptext.classList.add("done");
+        document.getElementById("bnp-mini-text").innerHTML = "⏹ 已停止";
+        peta.textContent = "";
+        if (ringFg) { ringFg.style.strokeDashoffset = "0"; ringFg.style.stroke = "#8E8E93"; }
+      } else if (chapterFailures > 0) {
+        _crossFadeText(ptext, `⚠️ 完成但有 ${chapterFailures} 章不完整`);
+        ptext.classList.add("done");
+        document.getElementById("bnp-mini-text").innerHTML = "⚠️ 部分不完整";
+        peta.textContent = "";
+        if (ringFg) { ringFg.style.strokeDashoffset = "0"; ringFg.style.stroke = "#FF9F0A"; }
+        addLog('WARN', `下载结束：${chapterFailures} 章内容不完整，已尽量保留可下载部分`);
+      } else {
+        _crossFadeText(ptext, "✅ 全部完成!");
+        ptext.classList.add("done");
+        document.getElementById("bnp-mini-text").innerHTML = "✅ 完成";
+        peta.textContent = "";
+        if (ringFg) { ringFg.style.strokeDashoffset = "0"; ringFg.style.stroke = "#34C759"; }
+        addLog('INFO', '全部完成');
+      }
       // delay for completion animation
       setTimeout(() => { prog.style.display = 'none'; document.getElementById('bnp-mini').style.display = 'none'; document.getElementById('bnp-btn').style.display = 'flex'; showPanel(); }, 2500);
     } catch (e) {
-      addLog('ERROR', `失败: ${e.message}`);
-      ptext.textContent = `❌ 失败: ${e.message}`; peta.textContent = ""; document.getElementById("bnp-mini-text").textContent = "❌ 失败"; document.getElementById("bnp-mini-sub").textContent = e.message;
-      ptext.style.animation = "bnp-shake 0.4s cubic-bezier(.4,0,.2,1)";
-      if (ringFg) { ringFg.style.stroke = "#FF3B30"; ringFg.style.strokeDashoffset = "0"; }
+      if (e && e._cancelled) {
+        addLog('INFO', '已取消');
+        ptext.textContent = '⏹ 已取消'; peta.textContent = ""; document.getElementById("bnp-mini-text").textContent = "⏹ 已取消"; document.getElementById("bnp-mini-sub").textContent = "";
+        if (ringFg) { ringFg.style.strokeDashoffset = "0"; ringFg.style.stroke = "#8E8E93"; }
+      } else {
+        addLog('ERROR', `失败: ${e.message}`);
+        ptext.textContent = `❌ 失败: ${e.message}`; peta.textContent = ""; document.getElementById("bnp-mini-text").textContent = "❌ 失败"; document.getElementById("bnp-mini-sub").textContent = e.message;
+        ptext.style.animation = "bnp-shake 0.4s cubic-bezier(.4,0,.2,1)";
+        if (ringFg) { ringFg.style.stroke = "#FF3B30"; ringFg.style.strokeDashoffset = "0"; }
+      }
       document.getElementById('bnp-mini').style.display = 'none'; document.getElementById('bnp-btn').style.display = 'flex'; showPanel();
-    } finally { btn.disabled = false; isDownloading = false; }
+    } finally { btn.disabled = false; isDownloading = false; resetCancel(); if (miniStopBtn) miniStopBtn.style.display = 'none'; }
   }
 
   const API = { getNovel, getCatalog, getChapter, getSecretMap, buildEpub, fetchPage, fetchImage, DOMAIN, resolveChapterUrl, CoverDetector, RequestScheduler };
