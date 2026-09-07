@@ -8,7 +8,7 @@
 ![License](https://img.shields.io/github/license/202310011168/bili-novel-downloader)
 ![Last commit](https://img.shields.io/github/last-commit/202310011168/bili-novel-downloader)
 
-**当前脚本版本：`v4.1.7`**（同步上游 bili_novel_packer v0.2.49 逻辑 + 实际站点修正）
+**当前脚本版本：`v4.1.9`**（同步上游 bili_novel_packer v0.2.49 逻辑 + 实际站点修正）
 
 </div>
 
@@ -131,6 +131,14 @@ D:\novels\
 | **深色模式** | 自动跟随系统主题切换浅色/深色 |
 | **毛玻璃 UI** | 原生风格界面，支持拖拽 |
 | **日志系统** | 每次下载独立日志，可复制/清空 |
+
+---
+
+## 📦 更新历史
+
+- **v4.1.9** 修复长章节翻页超时导致失败的问题；优化「停止 / 取消」流程（取消后干净退出、不误产空文件）；插图按 URL 去重；日志本地存储与 DOM 均设上限，避免长时间下载写爆配额。
+- **v4.1.8** 同步上游 bili_novel_packer v0.2.49 封面逻辑。
+- **v4.1.7** 同步上游 bili_novel_packer v0.2.49 抓取逻辑，并适配站点反爬更新。
 
 ---
 
