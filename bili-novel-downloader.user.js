@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         哔哩轻小说打包下载器
 // @namespace    https://github.com/202310011168/bili-novel-downloader
-// @version      4.1.9
+// @version      4.2.0
 // @updateURL    https://raw.githubusercontent.com/202310011168/bili-novel-downloader/master/bili-novel-downloader.user.js
 // @downloadURL  https://raw.githubusercontent.com/202310011168/bili-novel-downloader/master/bili-novel-downloader.user.js
 // @description  将哔哩轻小说(linovelib.com/bilinovel.com/bilinovel.net)打包为EPUB电子书。支持分卷选择下载、插图、封面识别、反爬调度、段落还原。苹果风格UI。
@@ -423,26 +423,11 @@ const BNP = (function () {
   }
 
   function parseChapterLog(js) {
-    // 新版chapterlog.js(v1006c1.7+)已不引用chapterId，且服务端直接返回顺序正确的段落，
-    // 无需段落还原。若仍套用旧版解析结果，会把正确的段落顺序打乱，因此这里直接跳过。
-    if (!js.includes('chapterId')) return null;
-    // 新版chapterlog.js已高度混淆，先用自定义base64解码尝试提取字符串
-    // 混淆格式: var _0xXXXX=['str1','str2',...]; 其中str是自定义base64编码
-    // 自定义字母表: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/=
-    try {
-      if (js.includes("['\\x61\\x70\\x70\\x6c\\x79']")) {
-        // 旧版readtools.js中的secretMap格式（兼容保留）
-      }
-      // 尝试查找常量数字字面量（即使混淆也能匹配）
-      const nums = js.match(/(?:0x[0-9a-f]+|\d{3,6})/g) || [];
-      const candidates = nums.map(n => n.startsWith('0x') ? parseInt(n, 16) : parseInt(n)).filter(n => n > 1000 && n < 500000);
-      // 典型的LCG参数: mod通常在10万左右, a和c在几千到几万
-      let foundMod = null, foundA = null, foundC = null;
-      for (const n of candidates) {
-        if (n > 20000 && n < 500000) foundMod = n;
-      }
-      // 若实在找不到则返回null (跳过还原)
-    } catch {}
+    // 与 bili_novel_packer BiliChapterLogTemplate.tryParse 对齐：
+    // 1) 不因“不含 chapterId”就提前跳过。实测新版 chapterlog.js(v1006c1.7+) 高度混淆、不含字面量
+    //    chapterId，但服务端正文仍可能是打乱的（前 fixedLength 段不动、其后 LCG 洗牌，由浏览器端
+    //    chapterlog.js 本地还原）；跳过会让 EPUB 保留乱序正文。
+    // 2) 与 Dart 一致：先试“明文”模板，解析不到再试“混淆”模板，两级都失败才返回 null（跳过还原）。
     // 尝试标准模式匹配(旧版未混淆或部分混淆)
     let m = js.match(/if\s*\(\s*[_$a-zA-Z0-9]+\s*>\s*(.+?)\)/);
     let sm = js.match(/=\s*(.+?Number\s*\(\s*chapterId\s*\).+?)\s*;/);
@@ -470,7 +455,13 @@ const BNP = (function () {
   function evVar(expr, vars) { let n = expr; for (const [k, v] of Object.entries(vars)) n = n.replace(new RegExp(`Number\\s*\\(\\s*${k}\\s*\\)`, 'g'), v).replace(new RegExp(`\\b${k}\\b`, 'g'), v); return evInt(n); }
   function splitTop(expr, op) { const r = []; let s = 0, d = 0; for (let i = 0; i < expr.length; i++) { if (expr[i] === '(') { d++; continue; } if (expr[i] === ')') { d--; continue; } if (d === 0 && expr.startsWith(op, i)) { r.push(expr.substring(s, i).trim()); s = i + op.length; i += op.length - 1; } } r.push(expr.substring(s).trim()); return r; }
   function stripP(e) { let v = e.trim(); while (v.startsWith('(') && v.endsWith(')')) { let d = 0, w = true; for (let i = 0; i < v.length; i++) { if (v[i] === '(') d++; if (v[i] === ')') { d--; if (d === 0 && i !== v.length - 1) { w = false; break; } } } if (!w) return v; v = v.substring(1, v.length - 1).trim(); } return v; }
-  function evInt(expr) { if (!expr) return null; try { const tk = tokenize(expr.trim()); let p = 0; function pe() { let v = pt(); while (tk[p] === '+' || tk[p] === '-') { const o = tk[p++]; const r = pt(); v = o === '+' ? v + r : v - r; } return v; } function pt() { let v = pu(); while (tk[p] === '*' || tk[p] === '/' || tk[p] === '%') { const o = tk[p++]; const r = pu(); v = o === '*' ? v * r : o === '/' ? Math.trunc(v / r) : v % r; } return v; } function pu() { if (tk[p] === '-') { p++; return -pu(); } if (tk[p] === '+') { p++; return pu(); } if (tk[p] === '~') { p++; return ~pu(); } return pp(); } function pp() { if (tk[p] === '(') { p++; const v = pe(); if (tk[p] === ')') p++; return v; } const t = tk[p++]; return t.startsWith('0x') ? parseInt(t, 16) : parseInt(t); } const r = pe(); return isNaN(r) ? null : r; } catch { return null; } }
+  function evInt(expr) { if (!expr) return null; try { const tk = tokenize(expr.trim()); let p = 0; // 与 bili_novel_packer _ChapterLogExpressionParser 对齐：优先级 ^ 最低 → << >> >>> → + - → * / % → 一元
+    function px() { let v = ps(); while (tk[p] === '^') { p++; v ^= ps(); } return v; }
+    function ps() { let v = pe(); while (tk[p] === '<<' || tk[p] === '>>' || tk[p] === '>>>') { const o = tk[p++]; const r = pe(); v = o === '<<' ? v << r : o === '>>>' ? v >>> r : v >> r; } return v; }
+    function pe() { let v = pt(); while (tk[p] === '+' || tk[p] === '-') { const o = tk[p++]; const r = pt(); v = o === '+' ? v + r : v - r; } return v; }
+    function pt() { let v = pu(); while (tk[p] === '*' || tk[p] === '/' || tk[p] === '%') { const o = tk[p++]; const r = pu(); v = o === '*' ? v * r : o === '/' ? Math.trunc(v / r) : v % r; } return v; }
+    function pu() { if (tk[p] === '-') { p++; return -pu(); } if (tk[p] === '+') { p++; return pu(); } if (tk[p] === '~') { p++; return ~pu(); } return pp(); }
+    function pp() { if (tk[p] === '(') { p++; const v = px(); if (tk[p] === ')') p++; return v; } const t = tk[p++]; return t.startsWith('0x') ? parseInt(t, 16) : parseInt(t); } const r = px(); return isNaN(r) ? null : r; } catch { return null; } }
   function tokenize(e) { const t = []; let i = 0; while (i < e.length) { if (e[i] === ' ' || e[i] === '\t') { i++; continue; } if (e[i] === '0' && (e[i + 1] === 'x' || e[i + 1] === 'X')) { let j = i + 2; while (j < e.length && /[0-9a-fA-F]/.test(e[j])) j++; t.push(e.substring(i, j)); i = j; continue; } if (/[0-9]/.test(e[i])) { let j = i; while (j < e.length && /[0-9]/.test(e[j])) j++; t.push(e.substring(i, j)); i = j; continue; } if (e.startsWith('>>>', i)) { t.push('>>>'); i += 3; continue; } if (e.startsWith('>>', i)) { t.push('>>'); i += 2; continue; } if (e.startsWith('<<', i)) { t.push('<<'); i += 2; continue; } t.push(e[i]); i++; } return t; }
 
   // 与 bili_novel_packer BiliNovelRestore 对齐：
