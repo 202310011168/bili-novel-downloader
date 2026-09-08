@@ -5,3 +5,4 @@ output/
 # 本地参考 / 测试脚本（不入库）
 bili-novel-downloader-whale.user.js
 deepseek-whale.user.js
+bili_novel_packer/

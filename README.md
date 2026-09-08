@@ -8,7 +8,7 @@
 ![License](https://img.shields.io/github/license/202310011168/bili-novel-downloader)
 ![Last commit](https://img.shields.io/github/last-commit/202310011168/bili-novel-downloader)
 
-**当前脚本版本：`v4.1.9`**（同步上游 bili_novel_packer v0.2.49 逻辑 + 实际站点修正）
+**当前脚本版本：`v4.2.0`**（同步上游 bili_novel_packer v0.2.49 逻辑 + 实际站点修正）
 
 </div>
 
@@ -63,6 +63,10 @@
 3. **打开小说页** —— 访问任意支持的小说详情页或目录页
 
 4. **开始使用** —— 页面右下角出现 **EPUB** 按钮，点击即可打开下载面板
+
+> 💡 **附赠小工具：上一本 / 下一本 快速跳转（可选）** —— 逐本下载时不用再手改网址里的编号。在小说详情页或目录页左下角会出现一个 `◀ ID ▶` 小工具：点 ◀/▶ 按小说编号 ±1 跳转，也可在中间输入框直接输编号回车跳任意一本；快捷键 `[` 上一本、`]` 下一本。
+>
+>    [![安装跳转小工具](https://img.shields.io/badge/Install-%E2%86%97%EF%B8%8F%20%E8%B7%B3%E8%BD%AC%E5%B0%8F%E5%B7%A5%E5%85%B7-34C759)](https://raw.githubusercontent.com/202310011168/bili-novel-downloader/master/bili-novel-jumper.user.js)
 
 ---
 
@@ -136,6 +140,7 @@ D:\novels\
 
 ## 📦 更新历史
 
+- **v4.2.0** 修复部分小说章内正文乱序：与 bili_novel_packer 对齐「段落还原」解析——不再因新版 chapterlog.js 不含 `chapterId` 而跳过还原；`evInt` 补上 `^/<< />>/>>>` 位运算以解析混淆常数。
 - **v4.1.9** 修复长章节翻页超时导致失败的问题；优化「停止 / 取消」流程（取消后干净退出、不误产空文件）；插图按 URL 去重；日志本地存储与 DOM 均设上限，避免长时间下载写爆配额。
 - **v4.1.8** 同步上游 bili_novel_packer v0.2.49 封面逻辑。
 - **v4.1.7** 同步上游 bili_novel_packer v0.2.49 抓取逻辑，并适配站点反爬更新。
